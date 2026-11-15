@@ -28,7 +28,9 @@ typedef void (*conv_wr_fn)(uint8_t *dst, size_t step, const uint8_t *src,
 
 struct conv_backend {
 	const char *name;
-	conv_rd_fn (*pick_rd)(const struct chan_plan *p); /* NULL: no fast path */
+	/* Return NULL when there is no fast path. With p->pair set, return an
+	 * I/Q pair kernel or NULL. */
+	conv_rd_fn (*pick_rd)(const struct chan_plan *p);
 	conv_wr_fn (*pick_wr)(const struct chan_plan *p);
 };
 
@@ -48,8 +50,13 @@ struct iio_conv {
 	size_t step, host_step, elem_size;
 	bool columns;
 	struct chan_plan *chans;
-	conv_rd_fn *rd; /* NULL entry: handled by the previous (pair) kernel */
+	conv_rd_fn *rd; /* one per channel, never NULL */
 	conv_wr_fn *wr;
+	/* rd_pair[2k] != NULL: converts channels 2k and 2k+1 in one pass.
+	 * Called with channel 2k's plan and pointers; Q lives length/8 bytes
+	 * after I in storage and one host element after I in the host array. */
+	conv_rd_fn *rd_pair;
+	conv_wr_fn *wr_pair;
 };
 
 size_t conv_type_size(enum iio_conv_type type);

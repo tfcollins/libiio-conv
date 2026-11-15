@@ -8,3 +8,4 @@ function(iio_conv_test name)
 endfunction()
 
 iio_conv_test(test_smoke)
+iio_conv_test(test_plan)
