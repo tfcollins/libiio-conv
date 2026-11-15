@@ -211,6 +211,17 @@ int iio_conv_create_raw(const struct iio_conv_chan *chans, unsigned int nb_chans
 	return conv_create(conv_dispatch(), chans, nb_chans, step, spec, conv);
 }
 
+int iio_conv_create_raw_backend(const char *backend, const struct iio_conv_chan *chans,
+		unsigned int nb_chans, size_t step, const struct iio_conv_spec *spec,
+		struct iio_conv **conv)
+{
+	const struct conv_backend *be = conv_backend_by_name(backend);
+
+	if (!be)
+		return -ENOTSUP;
+	return conv_create(be, chans, nb_chans, step, spec, conv);
+}
+
 void iio_conv_destroy(struct iio_conv *conv)
 {
 	if (!conv)

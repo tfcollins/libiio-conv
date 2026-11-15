@@ -26,6 +26,9 @@ include(cmake/IsaFlags.cmake)
 set(IIO_CONV_SOURCES src/plan.c src/dispatch.c)
 set(IIO_CONV_DEFINITIONS)
 iio_conv_add_backend(scalar)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+	iio_conv_add_backend(avx2 -mavx2)
+endif()
 
 if(IIO_CONV_WITH_LIBIIO)
 	# Only the pinned libiio v1 built by deps/build-libiio.sh, or an explicit
