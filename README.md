@@ -7,8 +7,9 @@ Typical gain over converting sample by sample with libiio is 15x to 80x for
 16-bit I/Q data; see `docs/benchmarks.md`. The design is in
 `docs/superpowers/specs/`.
 
-Status: the C library is complete for x86-64. The NEON backend compiles but
-has not been run yet. MATLAB bindings are the next part of the project.
+Status: the C library is complete. All backends are tested: SSE4.1, AVX2 and
+AVX-512 on x86-64, and NEON on a Cortex-A72 (static cross build, see below).
+MATLAB bindings are the next part of the project.
 
 ## Build
 
@@ -24,14 +25,16 @@ x86-64, `neon` on AArch64, `scalar` everywhere. `IIO_CONV_FORCE=<name>` in the
 environment overrides the choice (an unknown or unsupported name selects
 `scalar`). Every backend is tested to produce exactly the bytes `scalar` does.
 
-NEON is only compile-checked on an x86 host:
+NEON is built by cross compiling and tested on an ARM board. A static build
+needs nothing on the board:
 
-    cmake -S . -B build-aarch64 -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-toolchain.cmake \
-          -DIIO_CONV_WITH_LIBIIO=OFF
+    cmake -S . -B build-aarch64 -G Ninja \
+          -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-toolchain.cmake \
+          -DIIO_CONV_WITH_LIBIIO=OFF -DCMAKE_EXE_LINKER_FLAGS=-static
     cmake --build build-aarch64
 
-Copy `build-aarch64/tests/test_*` to an ARM board and run them there
-(`test_backends` is the one that exercises NEON).
+Copy `build-aarch64/tests/test_*` to the board and run them; `test_backends`
+is the one that compares NEON against the scalar reference.
 
 ## Use
 
