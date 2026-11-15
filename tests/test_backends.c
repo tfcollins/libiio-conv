@@ -183,6 +183,9 @@ int main(void)
 	static const char *const names[] = { "sse41", "avx2", "avx512", "neon" };
 	static const unsigned int bits16[] = { 12, 14, 16 };
 	static const enum iio_conv_type types16[] = { IIO_CONV_I16, IIO_CONV_F32, IIO_CONV_F64 };
+	static const unsigned int bits8[] = { 4, 6, 8 };
+	static const unsigned int bits32[] = { 20, 24, 32 };
+	static const enum iio_conv_type types32[] = { IIO_CONV_I32, IIO_CONV_F32, IIO_CONV_F64 };
 	struct iio_conv *c = NULL;
 	struct iio_conv_chan one = { .length = 16, .bits = 16 };
 	struct iio_conv_spec spec = { .type = IIO_CONV_I16 };
@@ -205,12 +208,21 @@ int main(void)
 		CHECK(has_pair_rd(be, 16, true, IIO_CONV_F64));
 		CHECK(has_pair_rd(be, 16, true, IIO_CONV_I16));
 
+		CHECK(has_pair_rd(be, 8, false, IIO_CONV_F32));
+		if (!strcmp(be, "avx2") || !strcmp(be, "avx512")) {
+			CHECK(has_pair_rd(be, 32, true, IIO_CONV_F64));
+			CHECK(has_pair_rd(be, 32, true, IIO_CONV_F32));
+			CHECK(has_pair_rd(be, 32, true, IIO_CONV_I32));
+		}
+
 		sweep(be, 16, bits16, 3, types16, 3, 130);
+		sweep(be, 8, bits8, 3, types16, 3, 70);
+		sweep(be, 32, bits32, 3, types32, 3, 70);
 
 		for (iter = 0; iter < 5000; iter++) {
 			struct gen_case g;
 
-			gen_random_case(&rng, &g, 70, 150);
+			gen_random_case(&rng, &g, iter & 1 ? 70 : 20, 150);
 			compare_case(be, &g);
 		}
 	}
