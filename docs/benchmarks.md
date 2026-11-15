@@ -269,7 +269,9 @@ there is no baseline).
   scalar backend, because the format is resolved once per block instead of
   once per sample. Most of that is the cost of one call into libiio per
   sample, not arithmetic.
-- SIMD adds 2x to 9x on top on x86-64 and 1.1x to 4.7x on the Cortex-A72.
+- SIMD adds 1.2x to 9.5x on top on x86-64 (13x to 167x over libiio in total)
+  and 1.0x to 4.7x on the Cortex-A72. The 1.0x case is eight strided int16
+  channels in 2^20-sample blocks on the Pi, where memory traffic dominates.
 - Block size matters. With blocks that fit in the cache, AVX-512 is clearly
   ahead of AVX2; with 2^20-sample blocks every backend is limited by memory
   traffic and they converge.

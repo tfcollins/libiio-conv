@@ -3,8 +3,9 @@
 Fast conversion between IIO buffer samples and host arrays (type change, I/Q
 pairing, layout, scaling) for libiio v1, with SIMD kernels chosen at run time.
 
-Typical gain over converting sample by sample with libiio is 15x to 110x for
-16-bit I/Q data on x86-64; see `docs/benchmarks.md`. The design is in
+Measured gain over converting sample by sample with libiio is 13x to 167x for
+12-bit-in-16 data on x86-64, depending on the case and block size; see
+`docs/benchmarks.md`. The design is in
 `docs/superpowers/specs/`.
 
 Status: the C library is complete. All backends are tested: SSE4.1, AVX2 and
