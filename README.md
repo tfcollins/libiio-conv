@@ -3,8 +3,8 @@
 Fast conversion between IIO buffer samples and host arrays (type change, I/Q
 pairing, layout, scaling) for libiio v1, with SIMD kernels chosen at run time.
 
-Typical gain over converting sample by sample with libiio is 15x to 80x for
-16-bit I/Q data; see `docs/benchmarks.md`. The design is in
+Typical gain over converting sample by sample with libiio is 15x to 110x for
+16-bit I/Q data on x86-64; see `docs/benchmarks.md`. The design is in
 `docs/superpowers/specs/`.
 
 Status: the C library is complete. All backends are tested: SSE4.1, AVX2 and
@@ -115,4 +115,8 @@ Integer conversions wrap unless `saturate` is set.
 
     cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DIIO_CONV_BUILD_BENCH=ON
     cmake --build build-rel
-    build-rel/bench/bench_conv tests/resources/conv_test.xml
+    build-rel/bench/bench_conv tests/resources/conv_test.xml          # 2^20-sample blocks
+    build-rel/bench/bench_conv -n 12 tests/resources/conv_test.xml    # 4096-sample blocks
+
+Without the XML file, or in a build without libiio (such as the static ARM
+build), the backends are compared with the scalar backend only.
