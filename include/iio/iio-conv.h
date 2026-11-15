@@ -115,12 +115,15 @@ __iio_conv_api int iio_conv_create(const struct iio_channels_mask *mask,
 		const struct iio_conv_spec *spec, struct iio_conv **conv);
 
 /** Convert a block into dst. Returns the number of samples converted, which is
- * limited by both the block and dst_bytes, or a negative errno. */
+ * limited by both the block and dst_bytes, or a negative errno. With the
+ * COLUMNS layout the columns are that many samples long.
+ * The block must come from a buffer opened with the converter's mask. */
 __iio_conv_api ssize_t iio_conv_read(const struct iio_conv *conv,
 		const struct iio_block *block, void *dst, size_t dst_bytes);
 
-/** Fill a block from src. Returns the number of samples written, at most the
- * block capacity, or a negative errno. */
+/** Fill a block from src, a host array of nb_samples samples. Returns the
+ * number of samples written, at most the block capacity, or a negative errno.
+ * Pass that count times iio_conv_get_step() to iio_block_enqueue(). */
 __iio_conv_api ssize_t iio_conv_write(const struct iio_conv *conv,
 		struct iio_block *block, const void *src, size_t nb_samples);
 

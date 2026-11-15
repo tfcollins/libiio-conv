@@ -239,15 +239,15 @@ const struct chan_plan *iio_conv_test_get_plan(const struct iio_conv *conv,
 	return &conv->chans[chan];
 }
 
-static size_t column_base(const struct iio_conv *conv, unsigned int chan, size_t n)
+static size_t column_base(const struct iio_conv *conv, unsigned int chan, size_t col_len)
 {
 	unsigned int col = conv->nb_cols == conv->nb_chans ? chan : chan / 2;
 
-	return conv->columns ? col * n * conv->elem_size : 0;
+	return conv->columns ? col * col_len * conv->elem_size : 0;
 }
 
-void iio_conv_read_raw(const struct iio_conv *conv, const void *src, size_t nb_samples,
-		void *dst)
+void conv_read_cols(const struct iio_conv *conv, const void *src, size_t nb_samples,
+		void *dst, size_t col_len)
 {
 	const uint8_t *s = src;
 	uint8_t *d = dst;
@@ -258,7 +258,7 @@ void iio_conv_read_raw(const struct iio_conv *conv, const void *src, size_t nb_s
 
 	for (i = 0; i < conv->nb_chans; i++) {
 		const struct chan_plan *p = &conv->chans[i];
-		uint8_t *out = d + column_base(conv, i, nb_samples) + p->dst_off;
+		uint8_t *out = d + column_base(conv, i, col_len) + p->dst_off;
 
 		if (conv->rd_pair[i]) {
 			conv->rd_pair[i](s + p->src_off, conv->step, out, nb_samples, p);
@@ -269,8 +269,8 @@ void iio_conv_read_raw(const struct iio_conv *conv, const void *src, size_t nb_s
 	}
 }
 
-void iio_conv_write_raw(const struct iio_conv *conv, void *dst, size_t nb_samples,
-		const void *src)
+void conv_write_cols(const struct iio_conv *conv, void *dst, size_t nb_samples,
+		const void *src, size_t col_len)
 {
 	const uint8_t *s = src;
 	uint8_t *d = dst;
@@ -281,7 +281,7 @@ void iio_conv_write_raw(const struct iio_conv *conv, void *dst, size_t nb_sample
 
 	for (i = 0; i < conv->nb_chans; i++) {
 		const struct chan_plan *p = &conv->chans[i];
-		const uint8_t *in = s + column_base(conv, i, nb_samples) + p->dst_off;
+		const uint8_t *in = s + column_base(conv, i, col_len) + p->dst_off;
 
 		if (conv->wr_pair[i]) {
 			conv->wr_pair[i](d + p->src_off, conv->step, in, nb_samples, p);
@@ -290,4 +290,16 @@ void iio_conv_write_raw(const struct iio_conv *conv, void *dst, size_t nb_sample
 			conv->wr[i](d + p->src_off, conv->step, in, nb_samples, p);
 		}
 	}
+}
+
+void iio_conv_read_raw(const struct iio_conv *conv, const void *src, size_t nb_samples,
+		void *dst)
+{
+	conv_read_cols(conv, src, nb_samples, dst, nb_samples);
+}
+
+void iio_conv_write_raw(const struct iio_conv *conv, void *dst, size_t nb_samples,
+		const void *src)
+{
+	conv_write_cols(conv, dst, nb_samples, src, nb_samples);
 }

@@ -61,6 +61,13 @@ struct iio_conv {
 
 size_t conv_type_size(enum iio_conv_type type);
 
+/* Convert nb_samples samples to / from a host array whose columns are
+ * col_len samples long (only matters for the COLUMNS layout). */
+void conv_read_cols(const struct iio_conv *conv, const void *src, size_t nb_samples,
+		void *dst, size_t col_len);
+void conv_write_cols(const struct iio_conv *conv, void *dst, size_t nb_samples,
+		const void *src, size_t col_len);
+
 /* Test hooks */
 const struct chan_plan *iio_conv_test_get_plan(const struct iio_conv *conv,
 		unsigned int chan);
