@@ -180,18 +180,33 @@ static inline __m512i sd_from_f32(const uint8_t *src, float b, float inv_a, floa
 
 #include "simd32_tmpl.h"
 
+/* A single 8- or 16-bit channel read with a stride is picked up one sample at
+ * a time; measured, the 128-bit path of the AVX2 backend is faster for that
+ * than filling 256 bits, so those are left to the fallback. */
+static bool strided_single(const struct chan_plan *p)
+{
+	return !p->pair && p->step != p->length / 8;
+}
+
 static conv_rd_fn pick_rd(const struct chan_plan *p)
 {
-	return p->length == 32 ? pick_rd32_avx512(p) : pick_rd16_avx512(p);
+	if (p->length == 32)
+		return pick_rd32_avx512(p);
+	return strided_single(p) ? NULL : pick_rd16_avx512(p);
 }
 
 static conv_wr_fn pick_wr(const struct chan_plan *p)
 {
-	return p->length == 32 ? pick_wr32_avx512(p) : pick_wr16_avx512(p);
+	if (p->length == 32)
+		return pick_wr32_avx512(p);
+	return strided_single(p) ? NULL : pick_wr16_avx512(p);
 }
 
 const struct conv_backend conv_backend_avx512 = {
 	.name = "avx512",
 	.pick_rd = pick_rd,
 	.pick_wr = pick_wr,
+#ifdef IIO_CONV_HAVE_AVX2
+	.fallback = &conv_backend_avx2,
+#endif
 };

@@ -199,6 +199,9 @@ static bool S_NAME(simd32_ok)(const struct chan_plan *p)
 
 	if (p->length != 32)
 		return false;
+	/* gather and scatter offsets are signed 32-bit lanes */
+	if (p->step > (size_t)INT32_MAX / SD)
+		return false;
 	if (p->type != IIO_CONV_I32 && !p->is_signed && p->bits == 32)
 		return false;
 	return p->dst_stride == (p->pair ? 2 * tsize : tsize);

@@ -67,7 +67,7 @@ int main(int argc, char **argv)
 	a = malloc(NB * host_step + 4);
 	b = malloc(NB * host_step + 4);
 	memset(a, 0, NB * host_step + 4);
-	CHECK(iio_conv_read(c, block, a, NB * host_step) == NB);
+	CHECK(iio_conv_read(c, block, a, NB) == NB);
 	iio_conv_read_raw(c, mem, NB, b);
 	CHECK(memcmp(a, b, NB * host_step) == 0);
 
@@ -76,13 +76,28 @@ int main(int argc, char **argv)
 		CHECK((size_t)((uint8_t *)iio_block_first(block, ch[i]) - mem) ==
 				iio_conv_test_get_plan(c, i)->src_off);
 
-	/* a small destination limits the count and is not overrun */
+	/* a host array with fewer rows limits the count and is not overrun */
 	memset(a, 0x7F, NB * host_step + 4);
-	CHECK(iio_conv_read(c, block, a, 5 * host_step + 3) == 5);
+	CHECK(iio_conv_read(c, block, a, 5) == 5);
 	CHECK(((uint8_t *)a)[5 * host_step] == 0x7F);
 	iio_conv_read_raw(c, mem, 5, b);
 	CHECK(memcmp(a, b, 5 * host_step) == 0);
 	CHECK(iio_conv_read(c, block, a, 0) == 0);
+
+	/* a host array with more rows than the block keeps its shape: column k
+	 * starts at row k * rows, the rows past the block are left alone */
+	{
+		float *wide = malloc(2 * NB * host_step);
+
+		memset(wide, 0x7F, 2 * NB * host_step);
+		iio_conv_read_raw(c, mem, NB, b);
+		CHECK(iio_conv_read(c, block, wide, 2 * NB) == NB);
+		for (col = 0; col < 5; col++) {
+			CHECK(memcmp(wide + col * 2 * NB, b + col * NB, NB * sizeof(float)) == 0);
+			CHECK(((uint8_t *)(wide + col * 2 * NB + NB))[0] == 0x7F);
+		}
+		free(wide);
+	}
 
 	/* writing more samples than the block holds stops at its capacity; the
 	 * host array keeps the caller's shape (2*NB rows per column) */

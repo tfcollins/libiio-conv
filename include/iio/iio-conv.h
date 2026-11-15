@@ -80,7 +80,8 @@ struct iio_conv_chan {
 };
 
 /** Build a converter from plain descriptors. step = bytes per sample.
- * Returns 0 or a negative errno. */
+ * Returns 0 or a negative errno. Channels must not overlap in storage; this
+ * is not checked, and writing overlapping channels leaves only the last one. */
 __iio_conv_api int iio_conv_create_raw(const struct iio_conv_chan *chans,
 		unsigned int nb_chans, size_t step,
 		const struct iio_conv_spec *spec, struct iio_conv **conv);
@@ -109,17 +110,23 @@ __iio_conv_api const char *iio_conv_get_backend_name(void);
 /* libiio v1 entry points (library built with IIO_CONV_WITH_LIBIIO) */
 
 /** Build a converter for chans, which must all be enabled in mask and belong
- * to the same device. mask is the mask the buffer was opened with. */
+ * to the same device. mask is the mask the buffer was opened with.
+ * The channel's IIO scale and offset are read here, once: build a new
+ * converter after changing an attribute that alters them. */
 __iio_conv_api int iio_conv_create(const struct iio_channels_mask *mask,
 		const struct iio_channel *const *chans, unsigned int nb_chans,
 		const struct iio_conv_spec *spec, struct iio_conv **conv);
 
-/** Convert a block into dst. Returns the number of samples converted, which is
- * limited by both the block and dst_bytes, or a negative errno. With the
- * COLUMNS layout the columns are that many samples long.
+/** Convert a block into dst, a host array with room for nb_samples samples
+ * (nb_samples rows per column in the COLUMNS layout). Returns the number of
+ * samples converted, the smaller of nb_samples and the block capacity, or a
+ * negative errno. Rows past that count are left untouched.
+ *
+ * A block does not record how much of it a dequeue filled, so the block
+ * capacity is the upper limit; pass a smaller nb_samples to convert less.
  * The block must come from a buffer opened with the converter's mask. */
 __iio_conv_api ssize_t iio_conv_read(const struct iio_conv *conv,
-		const struct iio_block *block, void *dst, size_t dst_bytes);
+		const struct iio_block *block, void *dst, size_t nb_samples);
 
 /** Fill a block from src, a host array of nb_samples samples. Returns the
  * number of samples written, at most the block capacity, or a negative errno.

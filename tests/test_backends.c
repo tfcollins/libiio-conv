@@ -178,6 +178,24 @@ static bool has_pair_rd(const char *be, unsigned int length, bool sgn, enum iio_
 	return ok;
 }
 
+/* The kernel a backend ends up with for one real channel */
+static conv_rd_fn single_rd(const char *be, unsigned int length, size_t step,
+		enum iio_conv_type type, conv_wr_fn *wr)
+{
+	struct iio_conv_chan ch = { .length = length, .bits = length, .is_signed = true };
+	struct iio_conv_spec spec = { .type = type };
+	struct iio_conv *c = NULL;
+	conv_rd_fn rd;
+
+	*wr = NULL;
+	if (iio_conv_create_raw_backend(be, &ch, 1, step, &spec, &c))
+		return NULL;
+	rd = c->rd[0];
+	*wr = c->wr[0];
+	iio_conv_destroy(c);
+	return rd;
+}
+
 int main(void)
 {
 	static const char *const names[] = { "sse41", "avx2", "avx512", "neon" };
@@ -209,6 +227,29 @@ int main(void)
 		CHECK(has_pair_rd(be, 16, true, IIO_CONV_I16));
 
 		CHECK(has_pair_rd(be, 8, false, IIO_CONV_F32));
+
+		if (!strcmp(be, "avx512")) {
+			conv_wr_fn w512, w2;
+
+			/* strided single channels are faster on the 128-bit
+			 * gather path, so avx512 hands them to avx2 */
+			CHECK(single_rd("avx512", 16, 8, IIO_CONV_I16, &w512) ==
+					single_rd("avx2", 16, 8, IIO_CONV_I16, &w2));
+			CHECK(w512 == w2);
+			/* contiguous ones stay on avx512 */
+			CHECK(single_rd("avx512", 16, 2, IIO_CONV_F32, &w512) !=
+					single_rd("avx2", 16, 2, IIO_CONV_F32, &w2));
+		}
+		if (!strcmp(be, "avx2") || !strcmp(be, "avx512")) {
+			conv_wr_fn wbe, wsc;
+
+			/* a step too large for 32-bit gather offsets falls back */
+			CHECK(single_rd(be, 32, (size_t)400 << 20, IIO_CONV_I32, &wbe) ==
+					single_rd("scalar", 32, (size_t)400 << 20, IIO_CONV_I32, &wsc));
+			CHECK(wbe == wsc);
+			CHECK(single_rd(be, 32, 16, IIO_CONV_I32, &wbe) !=
+					single_rd("scalar", 32, 16, IIO_CONV_I32, &wsc));
+		}
 		if (!strcmp(be, "avx2") || !strcmp(be, "avx512")) {
 			CHECK(has_pair_rd(be, 32, true, IIO_CONV_F64));
 			CHECK(has_pair_rd(be, 32, true, IIO_CONV_F32));

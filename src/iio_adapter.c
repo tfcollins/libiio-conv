@@ -66,17 +66,22 @@ int iio_conv_create(const struct iio_channels_mask *mask,
 	if (!mask || !chans || !nb_chans || !spec || !conv)
 		return -EINVAL;
 
+	if (!chans[0])
+		return -EINVAL;
 	dev = iio_channel_get_device(chans[0]);
+
+	/* also checks that the mask was made for this device, which must be
+	 * known before any channel is looked up in it */
+	step = iio_device_get_sample_size(dev, mask);
+	if (step < 0)
+		return (int)step;
+
 	for (i = 0; i < nb_chans; i++) {
 		if (!chans[i] || iio_channel_get_device(chans[i]) != dev ||
 				!iio_channel_is_scan_element(chans[i]) ||
 				!iio_channel_is_enabled(chans[i], mask))
 			return -EINVAL;
 	}
-
-	step = iio_device_get_sample_size(dev, mask);
-	if (step < 0)
-		return (int)step;
 
 	descs = calloc(nb_chans, sizeof(*descs));
 	if (!descs)
@@ -116,19 +121,20 @@ static size_t block_samples(const struct iio_conv *conv, const struct iio_block 
 }
 
 ssize_t iio_conv_read(const struct iio_conv *conv, const struct iio_block *block,
-		void *dst, size_t dst_bytes)
+		void *dst, size_t nb_samples)
 {
-	size_t n, fit;
+	size_t n;
 
-	if (!conv || !block || (!dst && dst_bytes))
+	if (!conv || !block || (!dst && nb_samples))
 		return -EINVAL;
 
 	n = block_samples(conv, block);
-	fit = dst_bytes / conv->host_step;
-	if (fit < n)
-		n = fit;
+	if (nb_samples < n)
+		n = nb_samples;
 
-	iio_conv_read_raw(conv, iio_block_start(block), n, dst);
+	/* the host array keeps the caller's shape even when the block is
+	 * smaller */
+	conv_read_cols(conv, iio_block_start(block), n, dst, nb_samples);
 	return (ssize_t)n;
 }
 

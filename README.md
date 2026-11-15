@@ -55,7 +55,7 @@ int ret = iio_conv_create(mask, chans, 2, &spec, &conv);
 
 float *iq = malloc(nb_samples * iio_conv_get_host_step(conv));
 iio_block_dequeue(block, false);
-ssize_t n = iio_conv_read(conv, block, iq, nb_samples * iio_conv_get_host_step(conv));
+ssize_t n = iio_conv_read(conv, block, iq, nb_samples);
 /* iq[2*k] is the real part and iq[2*k + 1] the imaginary part of sample k */
 ```
 
@@ -100,6 +100,10 @@ Integer conversions wrap unless `saturate` is set.
   backend, and 32-bit storage to int32 / single / double on AVX2 and AVX-512,
   for the `COLUMNS` layout (or one column). Everything else is converted by
   the portable kernels, still a whole block at a time.
+- `iio_conv_read()` converts up to the block's capacity: a block does not
+  record how many bytes a dequeue filled.
+- `SCALE_IIO` uses the scale and offset libiio read when the converter was
+  created.
 - `iio_conv_read()` and `iio_conv_write()` trust that the block comes from a
   buffer opened with the mask given to `iio_conv_create()`.
 - Tests assume a little-endian host.

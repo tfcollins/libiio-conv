@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include <errno.h>
+#include <math.h>
 #include "internal.h"
 #include "test_util.h"
 
@@ -31,6 +32,28 @@ static void test_errors(void)
 	CHECK(create1(ch, 2, f64, &c) == -EINVAL);
 	ch = D16; ch.byte_offset = 1;
 	CHECK(create1(ch, 2, f64, &c) == -EINVAL);
+
+	/* values chosen to wrap the range checks */
+	ch = D16; ch.bits = 0xFFFFFFFFu; ch.shift = 2;
+	CHECK(create1(ch, 2, f64, &c) == -EINVAL);
+	ch = D16; ch.byte_offset = SIZE_MAX - 1;
+	CHECK(create1(ch, 2, f64, &c) == -EINVAL);
+	/* constants that are not finite, or vanish in the host precision */
+	{
+		double inf = INFINITY, tiny = 1e-60, huge = 1e300;
+		struct iio_conv_spec sp = f64;
+
+		sp.user_offset = &inf;
+		CHECK(create1(D16, 2, sp, &c) == -EINVAL);
+		sp = f64; sp.scale = IIO_CONV_SCALE_IIO; sp.user_gain = &huge;
+		ch = D16; ch.scale = 1e300;
+		CHECK(create1(ch, 2, sp, &c) == -EINVAL);
+		sp = (struct iio_conv_spec){ .type = IIO_CONV_F32, .user_gain = &tiny };
+		CHECK(create1(D16, 2, sp, &c) == -EINVAL);
+		sp.type = IIO_CONV_F64; /* representable as a double */
+		CHECK(create1(D16, 2, sp, &c) == 0);
+		iio_conv_destroy(c);
+	}
 
 	three[1].byte_offset = 2; three[2].byte_offset = 4;
 	spec = f64; spec.complex_iq = true;

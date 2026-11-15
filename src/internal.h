@@ -12,6 +12,7 @@ struct chan_plan {
 	 * call may convert together (see plan.c) */
 	bool pair;
 	size_t src_off, dst_off, dst_stride;
+	size_t step; /* storage bytes per sample */
 	double a, b, inv_a;
 	enum iio_conv_type type;
 	uint64_t mask; /* (1 << bits) - 1 */
@@ -32,6 +33,8 @@ struct conv_backend {
 	 * I/Q pair kernel or NULL. */
 	conv_rd_fn (*pick_rd)(const struct chan_plan *p);
 	conv_wr_fn (*pick_wr)(const struct chan_plan *p);
+	/* asked next when this backend has no kernel; scalar is always last */
+	const struct conv_backend *fallback;
 };
 
 extern const struct conv_backend conv_backend_scalar; /* never returns NULL */

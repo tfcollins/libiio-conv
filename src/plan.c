@@ -42,9 +42,10 @@ static int plan_chan(struct chan_plan *p, const struct iio_conv_chan *ch,
 
 	if (ch->length != 8 && ch->length != 16 && ch->length != 32 && ch->length != 64)
 		return -ENOTSUP;
-	if (!ch->bits || ch->bits + ch->shift > ch->length)
+	/* written so that absurd values cannot wrap the comparisons */
+	if (!ch->bits || ch->bits > ch->length || ch->shift > ch->length - ch->bits)
 		return -EINVAL;
-	if (ch->byte_offset + ch->length / 8 > step)
+	if (step < ch->length / 8 || ch->byte_offset > step - ch->length / 8)
 		return -EINVAL;
 
 	p->length = ch->length;
@@ -54,6 +55,7 @@ static int plan_chan(struct chan_plan *p, const struct iio_conv_chan *ch,
 	p->saturate = spec->saturate;
 	p->type = spec->type;
 	p->src_off = ch->byte_offset;
+	p->step = step;
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 	p->swap = ch->is_be && ch->length > 8;
 #else
@@ -94,7 +96,11 @@ static int plan_chan(struct chan_plan *p, const struct iio_conv_chan *ch,
 
 	if (p->affine && !type_is_float(spec->type))
 		return -EINVAL;
-	if (p->a == 0.0 || p->a != p->a || p->b != p->b)
+	/* the constants must be usable in the host precision */
+	if (p->a == 0.0 || !isfinite(p->a) || !isfinite(p->b) || !isfinite(p->inv_a))
+		return -EINVAL;
+	if (spec->type == IIO_CONV_F32 && ((float)p->a == 0.0f || !isfinite((float)p->a) ||
+				!isfinite((float)p->b) || !isfinite((float)p->inv_a)))
 		return -EINVAL;
 
 	return 0;
@@ -106,6 +112,27 @@ static bool pair_eligible(const struct chan_plan *i, const struct chan_plan *q)
 		i->is_signed == q->is_signed && i->swap == q->swap &&
 		i->a == q->a && i->b == q->b &&
 		q->src_off == i->src_off + i->length / 8;
+}
+
+/* First kernel offered by the backend or the ones it falls back to */
+static conv_rd_fn pick_rd(const struct conv_backend *be, const struct chan_plan *p)
+{
+	conv_rd_fn fn = NULL;
+
+	for (; be && !fn; be = be->fallback)
+		if (be->pick_rd)
+			fn = be->pick_rd(p);
+	return fn;
+}
+
+static conv_wr_fn pick_wr(const struct conv_backend *be, const struct chan_plan *p)
+{
+	conv_wr_fn fn = NULL;
+
+	for (; be && !fn; be = be->fallback)
+		if (be->pick_wr)
+			fn = be->pick_wr(p);
+	return fn;
 }
 
 static int conv_create(const struct conv_backend *be, const struct iio_conv_chan *chans,
@@ -173,22 +200,20 @@ static int conv_create(const struct conv_backend *be, const struct iio_conv_chan
 
 		single.pair = false;
 
-		/* An I/Q pair kernel, when the backend has one, converts
+		/* An I/Q pair kernel, when a backend has one, converts
 		 * channels i and i+1 in one pass. */
 		if (spec->complex_iq && !(i & 1)) {
 			p->pair = pair_eligible(p, p + 1);
-			if (p->pair && be->pick_rd)
-				conv->rd_pair[i] = be->pick_rd(p);
-			if (p->pair && be->pick_wr)
-				conv->wr_pair[i] = be->pick_wr(p);
+			if (p->pair) {
+				conv->rd_pair[i] = pick_rd(be, p);
+				conv->wr_pair[i] = pick_wr(be, p);
+			}
 		}
 
-		if (be->pick_rd)
-			conv->rd[i] = be->pick_rd(&single);
+		conv->rd[i] = pick_rd(be, &single);
 		if (!conv->rd[i])
 			conv->rd[i] = conv_backend_scalar.pick_rd(&single);
-		if (be->pick_wr)
-			conv->wr[i] = be->pick_wr(&single);
+		conv->wr[i] = pick_wr(be, &single);
 		if (!conv->wr[i])
 			conv->wr[i] = conv_backend_scalar.pick_wr(&single);
 		if (!conv->rd[i] || !conv->wr[i]) {
