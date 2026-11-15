@@ -1,0 +1,72 @@
+cmake_minimum_required(VERSION 3.20)
+project(libiio-conv VERSION 0.1.0 LANGUAGES C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(NOT CMAKE_BUILD_TYPE)
+	set(CMAKE_BUILD_TYPE RelWithDebInfo)
+endif()
+
+option(IIO_CONV_WITH_LIBIIO "Build the libiio v1 entry points" ON)
+option(IIO_CONV_SANITIZE "Build with ASan and UBSan" OFF)
+option(IIO_CONV_BUILD_TESTS "Build tests" ON)
+option(IIO_CONV_BUILD_BENCH "Build benchmarks" OFF)
+
+add_compile_options(-Wall -Wextra -Werror=implicit-function-declaration)
+if(IIO_CONV_SANITIZE)
+	add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+	add_link_options(-fsanitize=address,undefined)
+endif()
+
+include(cmake/IsaFlags.cmake)
+
+set(IIO_CONV_SOURCES src/plan.c src/dispatch.c)
+set(IIO_CONV_DEFINITIONS)
+iio_conv_add_backend(scalar)
+
+if(IIO_CONV_WITH_LIBIIO)
+	# Only the pinned libiio v1 built by deps/build-libiio.sh, or an explicit
+	# LIBIIO_ROOT. Never the system libiio (v0.x).
+	set(LIBIIO_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/deps/install CACHE PATH "libiio v1 prefix")
+	find_path(LIBIIO_INCLUDE_DIR iio/iio.h PATHS ${LIBIIO_ROOT}/include NO_DEFAULT_PATH)
+	find_library(LIBIIO_LIBRARY NAMES iio PATHS ${LIBIIO_ROOT}/lib NO_DEFAULT_PATH)
+	if(NOT LIBIIO_INCLUDE_DIR OR NOT LIBIIO_LIBRARY)
+		message(FATAL_ERROR "libiio v1 not found in ${LIBIIO_ROOT}; run deps/build-libiio.sh")
+	endif()
+	add_library(libiio1 SHARED IMPORTED)
+	set_target_properties(libiio1 PROPERTIES
+		IMPORTED_LOCATION ${LIBIIO_LIBRARY}
+		INTERFACE_INCLUDE_DIRECTORIES ${LIBIIO_INCLUDE_DIR})
+	if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/iio_adapter.c)
+		list(APPEND IIO_CONV_SOURCES src/iio_adapter.c)
+	endif()
+endif()
+
+add_library(iio-conv-obj OBJECT ${IIO_CONV_SOURCES})
+target_include_directories(iio-conv-obj PUBLIC include PRIVATE src)
+target_compile_definitions(iio-conv-obj PRIVATE ${IIO_CONV_DEFINITIONS})
+if(IIO_CONV_WITH_LIBIIO)
+	target_link_libraries(iio-conv-obj PUBLIC libiio1)
+endif()
+
+add_library(iio-conv SHARED $<TARGET_OBJECTS:iio-conv-obj>)
+add_library(iio-conv-static STATIC $<TARGET_OBJECTS:iio-conv-obj>)
+foreach(tgt iio-conv iio-conv-static)
+	target_include_directories(${tgt} PUBLIC include)
+	target_link_libraries(${tgt} PUBLIC m)
+	if(IIO_CONV_WITH_LIBIIO)
+		target_link_libraries(${tgt} PUBLIC libiio1)
+	endif()
+endforeach()
+set_target_properties(iio-conv PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0)
+
+if(IIO_CONV_BUILD_TESTS)
+	enable_testing()
+	add_subdirectory(tests)
+endif()
+if(IIO_CONV_BUILD_BENCH)
+	add_subdirectory(bench)
+endif()
