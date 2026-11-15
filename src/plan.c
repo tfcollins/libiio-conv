@@ -238,3 +238,56 @@ const struct chan_plan *iio_conv_test_get_plan(const struct iio_conv *conv,
 {
 	return &conv->chans[chan];
 }
+
+static size_t column_base(const struct iio_conv *conv, unsigned int chan, size_t n)
+{
+	unsigned int col = conv->nb_cols == conv->nb_chans ? chan : chan / 2;
+
+	return conv->columns ? col * n * conv->elem_size : 0;
+}
+
+void iio_conv_read_raw(const struct iio_conv *conv, const void *src, size_t nb_samples,
+		void *dst)
+{
+	const uint8_t *s = src;
+	uint8_t *d = dst;
+	unsigned int i;
+
+	if (!nb_samples)
+		return;
+
+	for (i = 0; i < conv->nb_chans; i++) {
+		const struct chan_plan *p = &conv->chans[i];
+		uint8_t *out = d + column_base(conv, i, nb_samples) + p->dst_off;
+
+		if (conv->rd_pair[i]) {
+			conv->rd_pair[i](s + p->src_off, conv->step, out, nb_samples, p);
+			i++;
+		} else {
+			conv->rd[i](s + p->src_off, conv->step, out, nb_samples, p);
+		}
+	}
+}
+
+void iio_conv_write_raw(const struct iio_conv *conv, void *dst, size_t nb_samples,
+		const void *src)
+{
+	const uint8_t *s = src;
+	uint8_t *d = dst;
+	unsigned int i;
+
+	if (!nb_samples)
+		return;
+
+	for (i = 0; i < conv->nb_chans; i++) {
+		const struct chan_plan *p = &conv->chans[i];
+		const uint8_t *in = s + column_base(conv, i, nb_samples) + p->dst_off;
+
+		if (conv->wr_pair[i]) {
+			conv->wr_pair[i](d + p->src_off, conv->step, in, nb_samples, p);
+			i++;
+		} else {
+			conv->wr[i](d + p->src_off, conv->step, in, nb_samples, p);
+		}
+	}
+}

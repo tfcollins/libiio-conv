@@ -9,3 +9,5 @@ endfunction()
 
 iio_conv_test(test_smoke)
 iio_conv_test(test_plan)
+iio_conv_test(test_scalar)
+set_source_files_properties(test_scalar.c PROPERTIES COMPILE_FLAGS -ffp-contract=off)
