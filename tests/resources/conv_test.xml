@@ -13,4 +13,14 @@
     <channel id="voltage0" type="output" ><scan-element index="0" format="le:s16/16&gt;&gt;0" /></channel>
     <channel id="voltage1" type="output" ><scan-element index="1" format="le:s16/16&gt;&gt;0" /></channel>
   </device>
+  <device id="iio:device2" name="conv-bench" >
+    <channel id="voltage0" type="input" ><scan-element index="0" format="le:s12/16&gt;&gt;0" /></channel>
+    <channel id="voltage1" type="input" ><scan-element index="1" format="le:s12/16&gt;&gt;0" /></channel>
+    <channel id="voltage2" type="input" ><scan-element index="2" format="le:s12/16&gt;&gt;0" /></channel>
+    <channel id="voltage3" type="input" ><scan-element index="3" format="le:s12/16&gt;&gt;0" /></channel>
+    <channel id="voltage4" type="input" ><scan-element index="4" format="le:s12/16&gt;&gt;0" /></channel>
+    <channel id="voltage5" type="input" ><scan-element index="5" format="le:s12/16&gt;&gt;0" /></channel>
+    <channel id="voltage6" type="input" ><scan-element index="6" format="le:s12/16&gt;&gt;0" /></channel>
+    <channel id="voltage7" type="input" ><scan-element index="7" format="le:s12/16&gt;&gt;0" /></channel>
+  </device>
 </context>
