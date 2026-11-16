@@ -110,7 +110,7 @@ static inline void gen_random_case(uint64_t *rng, struct gen_case *g, unsigned i
 		g->spec.type = rng_range(rng, 2) ? IIO_CONV_F32 : IIO_CONV_F64;
 	g->spec.layout = rng_range(rng, 2) ? IIO_CONV_COLUMNS : IIO_CONV_INTERLEAVED;
 	g->spec.saturate = rng_range(rng, 2);
-	g->spec.raw = rng_range(rng, 6) == 0;
+	g->spec.raw = rng_range(rng, 4) == 0;
 	g->spec.complex_iq = !(g->nb_chans & 1) && rng_range(rng, 2);
 	if (gen_type_is_float(g->spec.type)) {
 		g->spec.scale = (enum iio_conv_scale)rng_range(rng, 3);
@@ -124,6 +124,9 @@ static inline void gen_random_case(uint64_t *rng, struct gen_case *g, unsigned i
 				g->spec.user_offset = g->uo;
 		}
 	}
+	/* the IIO scale is not allowed on raw words */
+	if (g->spec.raw && g->spec.scale == IIO_CONV_SCALE_IIO)
+		g->spec.scale = IIO_CONV_SCALE_NONE;
 }
 
 static inline void gen_fill(uint64_t *rng, uint8_t *buf, size_t len)

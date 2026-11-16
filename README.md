@@ -129,6 +129,10 @@ Host value = (raw + offset) * gain, then the optional per-channel
 | `IIO_CONV_SCALE_IIO` | the channel's IIO scale | the channel's IIO offset |
 | `IIO_CONV_SCALE_FULLSCALE` | 1/2^(bits-1) signed, 1/2^bits unsigned | 0 |
 
+With `raw` the whole storage word is the sample, so `bits` in the table is
+the storage size, and `IIO_CONV_SCALE_IIO`, which describes the valid bits
+only, is refused with `-EINVAL`.
+
 Any scaling needs a float host type. Writing from floats rounds to nearest
 (ties to even), turns NaN into 0 and always saturates to the channel's range.
 Integer conversions wrap unless `saturate` is set.

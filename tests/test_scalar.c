@@ -71,28 +71,90 @@ static void test_read_vectors(void)
 	CHECK(u8 == 255);
 }
 
-/* raw: the storage word as it is, only the byte order is handled */
+/* raw: the storage word as it is, only byte order and signedness are handled */
 static void test_raw_vectors(void)
 {
+	const struct iio_conv_chan s12_4 = chan(16, 12, 4, true, false, 0);
+	const struct iio_conv_chan s12_0 = chan(16, 12, 0, true, false, 0);
+	const struct iio_conv_chan u12_0 = chan(16, 12, 0, false, false, 0);
+	const struct iio_conv_chan u24be = chan(32, 24, 8, false, true, 0);
 	struct iio_conv_spec i16 = { .type = IIO_CONV_I16, .raw = true };
+	struct iio_conv_spec i16c = { .type = IIO_CONV_I16 };
 	struct iio_conv_spec u16s = { .type = IIO_CONV_U16, .raw = true };
 	struct iio_conv_spec f32 = { .type = IIO_CONV_F32, .raw = true };
-	int16_t s16 = 99; uint16_t u16 = 99; float f = 99;
+	struct iio_conv_spec spec;
+	int16_t s16 = 99; uint16_t u16 = 99; int32_t s32 = 99; uint32_t u32 = 99;
+	float f = 99; double d = 99;
 	uint8_t b[2];
 
-	rd1(chan(16, 12, 4, true, false, 0), i16, (uint8_t[]){ 0xF0, 0xFF }, &s16);
+	/* read */
+	rd1(s12_4, i16, (uint8_t[]){ 0xF0, 0xFF }, &s16);
 	CHECK(s16 == -16); /* -1 without raw */
+	rd1(s12_4, i16, (uint8_t[]){ 0xF0, 0x7F }, &s16);
+	CHECK(s16 == 32752);
+
+	/* the four bits above the valid ones are kept */
+	rd1(s12_0, i16, (uint8_t[]){ 0x34, 0x12 }, &s16);
+	CHECK(s16 == 4660);
+	rd1(s12_0, i16c, (uint8_t[]){ 0x34, 0x12 }, &s16);
+	CHECK(s16 == 564);
+	rd1(s12_0, i16, (uint8_t[]){ 0x23, 0xA1 }, &s16);
+	CHECK(s16 == -24285);
+	rd1(s12_0, i16c, (uint8_t[]){ 0x23, 0xA1 }, &s16);
+	CHECK(s16 == 291);
+
+	/* unsigned word 65535: wraps, saturates, or fits */
+	rd1(u12_0, i16, (uint8_t[]){ 0xFF, 0xFF }, &s16);
+	CHECK(s16 == -1);
+	spec = i16; spec.saturate = true;
+	rd1(u12_0, spec, (uint8_t[]){ 0xFF, 0xFF }, &s16);
+	CHECK(s16 == 32767);
+	spec = (struct iio_conv_spec){ .type = IIO_CONV_I32, .raw = true };
+	rd1(u12_0, spec, (uint8_t[]){ 0xFF, 0xFF }, &s32);
+	CHECK(s32 == 65535);
+
+	/* byte order is still honoured */
+	spec = (struct iio_conv_spec){ .type = IIO_CONV_U32, .raw = true };
+	rd1(u24be, spec, (uint8_t[]){ 0x12, 0x34, 0x56, 0x78 }, &u32);
+	CHECK(u32 == 0x12345678);
+	spec.raw = false;
+	rd1(u24be, spec, (uint8_t[]){ 0x12, 0x34, 0x56, 0x78 }, &u32);
+	CHECK(u32 == 0x00123456);
 	rd1(chan(16, 12, 4, false, true, 0), u16s, (uint8_t[]){ 0x12, 0x34 }, &u16);
 	CHECK(u16 == 0x1234);
-	rd1(chan(16, 12, 4, true, false, 0), f32, (uint8_t[]){ 0x00, 0x80 }, &f);
-	CHECK(f == -32768.0f);
 
+	/* floats: the word as a number, full scale over the whole word */
+	rd1(s12_4, f32, (uint8_t[]){ 0x00, 0x80 }, &f);
+	CHECK(f == -32768.0f);
+	spec = (struct iio_conv_spec){ .type = IIO_CONV_F64, .raw = true,
+		.scale = IIO_CONV_SCALE_FULLSCALE };
+	rd1(s12_4, spec, (uint8_t[]){ 0x00, 0x40 }, &d);
+	CHECK(d == 0.5);
+
+	/* write: not masked to 12 bits, not shifted */
+	s16 = 32767; memset(b, 0xAA, 2);
+	wr1(s12_4, i16, &s16, b);
+	CHECK(b[0] == 0xFF && b[1] == 0x7F);
+	spec = (struct iio_conv_spec){ .type = IIO_CONV_I16, .saturate = true };
+	memset(b, 0xAA, 2);
+	wr1(s12_4, spec, &s16, b);
+	CHECK(b[0] == 0xF0 && b[1] == 0x7F); /* converted: clamped to 2047, shifted */
+	s16 = -2; memset(b, 0xAA, 2);
+	wr1(s12_4, i16, &s16, b);
+	CHECK(b[0] == 0xFE && b[1] == 0xFF);
 	s16 = 0x7FF1; memset(b, 0xAA, 2);
-	wr1(chan(16, 12, 4, true, false, 0), i16, &s16, b);
-	CHECK(b[0] == 0xF1 && b[1] == 0x7F); /* not masked to 12 bits, not shifted */
+	wr1(s12_4, i16, &s16, b);
+	CHECK(b[0] == 0xF1 && b[1] == 0x7F);
 	u16 = 0x1234; memset(b, 0xAA, 2);
 	wr1(chan(16, 12, 4, false, true, 0), u16s, &u16, b);
 	CHECK(b[0] == 0x12 && b[1] == 0x34);
+
+	/* floats saturate to the range of the whole word */
+	spec = (struct iio_conv_spec){ .type = IIO_CONV_F64, .raw = true,
+		.scale = IIO_CONV_SCALE_FULLSCALE };
+	d = 1e9; memset(b, 0xAA, 2);
+	wr1(s12_4, spec, &d, b);
+	CHECK(b[0] == 0xFF && b[1] == 0x7F);
 }
 
 static void test_read_complex_and_order(void)

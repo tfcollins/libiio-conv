@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include <errno.h>
 #include <math.h>
+#include <stddef.h>
 #include "internal.h"
 #include "test_util.h"
 
@@ -131,33 +132,47 @@ static void test_constants(void)
 	iio_conv_destroy(c);
 }
 
+/* 12 valid bits in the upper part of a 16-bit word */
+static const struct iio_conv_chan S12_4 = {
+	.length = 16, .bits = 12, .shift = 4, .is_signed = true, .is_be = false,
+};
+
 static void test_raw(void)
 {
 	struct iio_conv_spec spec = { .type = IIO_CONV_I16, .raw = true };
-	struct iio_conv_chan ch = D16; /* 12 valid bits in 16 */
+	struct iio_conv_chan ch;
 	struct iio_conv *c;
+	double gain = 2.0;
 
-	ch.shift = 4;
-	CHECK(create1(ch, 2, spec, &c) == 0);
+#if __SIZEOF_POINTER__ == 8
+	/* raw sits in what was padding: nothing else moved */
+	CHECK(sizeof(struct iio_conv_spec) == 32);
+	CHECK(offsetof(struct iio_conv_spec, user_gain) == 16);
+#endif
+	CHECK(offsetof(struct iio_conv_spec, raw) == offsetof(struct iio_conv_spec, saturate) + 1);
+
+	CHECK(create1(S12_4, 2, spec, &c) == 0);
 	if (c) {
 		const struct chan_plan *p = iio_conv_test_get_plan(c, 0);
 
-		CHECK(p->bits == 16 && p->shift == 0);
-		CHECK(p->mask == 0xFFFF);
-		CHECK(p->lo == -32768 && p->hi == 32767);
-		CHECK(!p->affine);
+		CHECK(p->bits == 16);
+		CHECK(p->shift == 0);
+		CHECK(p->mask == 0xffff);
+		CHECK(p->lo == -32768);
+		CHECK(p->hi == 32767);
+		CHECK(p->affine == false);
 	}
 	iio_conv_destroy(c);
 
-	/* scaling then refers to the whole storage word */
+	/* full scale then refers to the whole storage word */
 	spec = (struct iio_conv_spec){ .type = IIO_CONV_F64, .raw = true,
 		.scale = IIO_CONV_SCALE_FULLSCALE };
-	CHECK(create1(ch, 2, spec, &c) == 0);
+	CHECK(create1(S12_4, 2, spec, &c) == 0);
 	if (c)
 		CHECK(iio_conv_test_get_plan(c, 0)->a == 1.0 / 32768);
 	iio_conv_destroy(c);
 
-	ch.is_signed = false;
+	ch = S12_4; ch.is_signed = false;
 	CHECK(create1(ch, 2, spec, &c) == 0);
 	if (c) {
 		CHECK(iio_conv_test_get_plan(c, 0)->a == 1.0 / 65536);
@@ -165,8 +180,31 @@ static void test_raw(void)
 	}
 	iio_conv_destroy(c);
 
+	/* the IIO scale describes the valid bits, not the word: refused, with
+	 * or without a scale on the channel and whatever the host type */
+	spec = (struct iio_conv_spec){ .type = IIO_CONV_F64, .raw = true,
+		.scale = IIO_CONV_SCALE_IIO };
+	CHECK(create1(S12_4, 2, spec, &c) == -EINVAL);
+	CHECK(c == NULL);
+	CHECK(create1(D16, 2, spec, &c) == -EINVAL);
+	spec.type = IIO_CONV_I16;
+	CHECK(create1(S12_4, 2, spec, &c) == -EINVAL);
+	spec = (struct iio_conv_spec){ .type = IIO_CONV_F64, .scale = IIO_CONV_SCALE_IIO };
+	CHECK(create1(S12_4, 2, spec, &c) == 0); /* fine without raw */
+	iio_conv_destroy(c);
+
+	/* user gain and offset are unchanged by raw */
+	spec = (struct iio_conv_spec){ .type = IIO_CONV_F64, .raw = true, .user_gain = &gain };
+	CHECK(create1(S12_4, 2, spec, &c) == 0);
+	if (c) {
+		CHECK(iio_conv_test_get_plan(c, 0)->a == 2.0);
+		CHECK(iio_conv_test_get_plan(c, 0)->b == 0.0);
+	}
+	iio_conv_destroy(c);
+
 	/* a malformed descriptor is still rejected */
-	ch = D16; ch.bits = 0;
+	spec = (struct iio_conv_spec){ .type = IIO_CONV_I16, .raw = true };
+	ch = S12_4; ch.bits = 0;
 	CHECK(create1(ch, 2, spec, &c) == -EINVAL);
 }
 
