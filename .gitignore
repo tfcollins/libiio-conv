@@ -1,5 +1,5 @@
 build*/
 deps/src/
-deps/install/
+deps/install
 .superpowers/
 matlab/*.mexa64
