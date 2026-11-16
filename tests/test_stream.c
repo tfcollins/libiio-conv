@@ -1,340 +1,484 @@
 /* SPDX-License-Identifier: MIT */
-/* Streams against the emulation backend: real blocks, data from files. */
+/*
+ * The stream layer against the emulation backend: real blocks, receive data
+ * from the ramp file of the fixture (see fixture_util.h).
+ */
 #include <errno.h>
 #include <iio/iio.h>
 #include <iio/iio-conv-stream.h>
-#include "stream_util.h"
+#include <time.h>
+#include "fixture_util.h"
+#include "test_util.h"
 
-#define N 64
-#define FILE_FRAMES 4
-
+static char dir[PATH_MAX];
 static struct iio_context *ctx;
-static const struct iio_device *rx, *tx;
+static const struct iio_device *rx, *tx, *multi, *zoo;
 static struct iio_buffer *rx_buf, *tx_buf;
-static const struct iio_channel *rx_i, *rx_q, *rx_v2, *tx0, *tx1;
+/* emu-rx: voltage0_i, voltage0_q, voltage1_i, voltage1_q, voltage2 */
+static const struct iio_channel *rx_ch[5];
+/* emu-tx: voltage0_i, voltage0_q, voltage1_i, voltage1_q */
+static const struct iio_channel *tx_ch[4];
 
-/* RX data for the mask {voltage0_i, voltage0_q}: sample k holds I = k + 1,
- * Q = -(k + 1). emu delivers the file as it is and wraps at its end. */
-static void write_rx_iq(void)
+/* complex int16, no scaling: the spec of every case that does not say otherwise */
+static const struct iio_conv_spec iq16 = {
+	.type = IIO_CONV_I16, .layout = IIO_CONV_COLUMNS, .scale = IIO_CONV_SCALE_NONE,
+	.complex_iq = true,
+};
+
+static double now_s(void)
 {
-	int16_t d[2 * N * FILE_FRAMES];
-	int k;
+	struct timespec ts;
 
-	for (k = 0; k < N * FILE_FRAMES; k++) {
-		d[2 * k] = (int16_t)(k + 1);
-		d[2 * k + 1] = (int16_t)-(k + 1);
-	}
-	fx_write("conv-rx_buf0.bin", d, sizeof(d));
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 
-/* value of sample k of frame f */
-static int rx_value(unsigned int frame, unsigned int k)
+static struct iio_conv_stream *open_rx(const struct iio_channel *const *chans,
+		unsigned int nb_chans, size_t samples, unsigned int nb_blocks,
+		const struct iio_conv_spec *spec)
 {
-	return (int)((frame * N + k) % (N * FILE_FRAMES)) + 1;
-}
-
-static struct iio_conv_stream *open_rx(enum iio_conv_type type, enum iio_conv_scale scale,
-		unsigned int nb_blocks, int timeout_ms)
-{
-	const struct iio_channel *chans[2] = { rx_i, rx_q };
-	struct iio_conv_stream_params p = { .nb_samples = N, .nb_blocks = nb_blocks,
-		.timeout_ms = timeout_ms,
-		.spec = { .type = type, .scale = scale, .complex_iq = true } };
 	struct iio_conv_stream *s = NULL;
 
-	write_rx_iq();
-	CHECK(iio_conv_stream_open(rx_buf, chans, 2, &p, &s) == 0);
+	CHECK(iio_conv_stream_open(rx_buf, chans, nb_chans, samples, nb_blocks, false, spec, &s) == 0);
 	return s;
 }
 
-static void test_rx_complex_single(void)
+/* number of I/Q pairs of dst that are not the ramp from pair `first` on */
+static unsigned int ramp_mismatches(const int16_t *dst, unsigned int first, unsigned int n)
 {
-	struct iio_conv_stream *s = open_rx(IIO_CONV_F32, IIO_CONV_SCALE_FULLSCALE, 2, -1);
-	float out[2 * N];
-	unsigned int f, k;
+	unsigned int k, bad = 0;
+
+	for (k = 0; k < n; k++)
+		bad += dst[2 * k] != fixture_ramp_i(first + k) || dst[2 * k + 1] != fixture_ramp_q(first + k);
+	return bad;
+}
+
+static void test_rx_frames(void)
+{
+	struct iio_conv_stream *s = open_rx(rx_ch, 2, 1024, 2, &iq16);
+	int16_t dst[2 * 1024];
+	unsigned int f;
 
 	if (!s)
 		return;
-	CHECK(!iio_conv_stream_is_output(s));
-	CHECK(iio_conv_stream_get_nb_samples(s) == N);
-	CHECK(iio_conv_stream_get_nb_blocks(s) == 2);
 	CHECK(iio_conv_stream_get_step(s) == 4);
-	CHECK(iio_conv_stream_get_host_step(s) == 8);
+	CHECK(iio_conv_stream_get_columns(s) == 1);
+	CHECK(iio_conv_stream_get_samples(s) == 1024);
+	CHECK(iio_conv_stream_get_nb_blocks(s) == 2);
+	CHECK(!iio_conv_stream_is_output(s));
+	CHECK(iio_conv_stream_is_complex(s));
+	CHECK(iio_conv_stream_get_type(s) == IIO_CONV_I16);
 
-	/* six frames: the fifth and sixth come from the start of the file again */
-	for (f = 0; f < 6; f++) {
-		memset(out, 0, sizeof(out));
-		CHECK(iio_conv_stream_read(s, out) == N);
-		for (k = 0; k < N; k++) {
-			float v = (float)rx_value(f, k) / 2048.0f;
-
-			CHECK(out[2 * k] == v && out[2 * k + 1] == -v);
-		}
+	/* the file holds four frames: the fifth read starts over */
+	for (f = 0; f < 5; f++) {
+		memset(dst, 0x55, sizeof(dst));
+		CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+		CHECK(ramp_mismatches(dst, 1024 * f, 1024) == 0);
 	}
-	iio_conv_stream_close(s);
+	CHECK(dst[0] == -2048 && dst[1] == 2047);
+	iio_conv_stream_close(&s);
 }
 
-static void test_rx_int16(void)
+static void test_rx_one_block(void)
 {
-	static const unsigned int blocks[] = { 1, 2, 4 };
-	static const int timeouts[] = { -1, 0, 50 };
-	int16_t out[2 * N];
-	unsigned int b, f, k;
+	struct iio_conv_stream *s = open_rx(rx_ch, 2, 1024, 1, &iq16);
+	int16_t dst[2 * 1024];
 
-	for (b = 0; b < 3; b++) {
-		struct iio_conv_stream *s = open_rx(IIO_CONV_I16, IIO_CONV_SCALE_NONE, blocks[b],
-				timeouts[b]);
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_get_nb_blocks(s) == 1);
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+	CHECK(ramp_mismatches(dst, 0, 1024) == 0);
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+	CHECK(ramp_mismatches(dst, 1024, 1024) == 0);
+	CHECK(dst[0] == -1024 && dst[1] == 1023);
+	iio_conv_stream_close(&s);
+}
+
+/* raw: the 16-bit words of the file, junk bits included */
+static void test_rx_raw(void)
+{
+	struct iio_conv_spec spec = iq16;
+	struct iio_conv_stream *s;
+	int16_t dst[2 * 1024];
+	unsigned int k, bad = 0;
+
+	spec.raw = true;
+	s = open_rx(rx_ch, 2, 1024, 2, &spec);
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+	for (k = 0; k < 1024; k++)
+		bad += dst[2 * k] != (int16_t)fixture_ramp_word_i(k) ||
+			dst[2 * k + 1] != (int16_t)fixture_ramp_word_q(k);
+	CHECK(bad == 0);
+	CHECK(dst[0] == 2048 && dst[1] == 2047);
+	CHECK(dst[2] == 6145 && dst[3] == 2046);
+	CHECK(dst[32] == 2064 && dst[33] == 6127);
+	CHECK(dst[2046] == -1025 && dst[2047] == -3072);
+	iio_conv_stream_close(&s);
+}
+
+static void test_rx_float(void)
+{
+	struct iio_conv_spec spec = iq16;
+	struct iio_conv_stream *s;
+	float dst[2 * 1024];
+	unsigned int k, bad = 0;
+
+	spec.type = IIO_CONV_F32;
+	spec.scale = IIO_CONV_SCALE_FULLSCALE;
+	s = open_rx(rx_ch, 2, 1024, 2, &spec);
+	if (s) {
+		CHECK(iio_conv_stream_get_type(s) == IIO_CONV_F32);
+		CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+		for (k = 0; k < 1024; k++)
+			bad += dst[2 * k] != (float)fixture_ramp_i(k) / 2048.0f ||
+				dst[2 * k + 1] != (float)fixture_ramp_q(k) / 2048.0f;
+		CHECK(bad == 0);
+		CHECK(dst[0] == -1.0f && dst[1] == 0.99951171875f);
+		iio_conv_stream_close(&s);
+	}
+
+	/* scaling needs a float host type */
+	spec.type = IIO_CONV_I16;
+	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 2, 1024, 2, false, &spec, &s) == -EINVAL);
+	CHECK(s == NULL);
+}
+
+/* The channel's IIO scale and offset. With voltage2 alone the samples are the
+ * words of the file one by one: 14 bits from bit 2 up, (value - 100) * 0.25. */
+static void test_rx_scale_iio(void)
+{
+	struct iio_conv_spec spec = { .type = IIO_CONV_F64, .scale = IIO_CONV_SCALE_IIO };
+	struct iio_conv_stream *s = open_rx(&rx_ch[4], 1, 4, 1, &spec);
+	double dst[4];
+	unsigned int k;
+
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_get_step(s) == 2);
+	CHECK(iio_conv_stream_get_columns(s) == 1);
+	CHECK(!iio_conv_stream_is_complex(s));
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+	for (k = 0; k < 4; k++) {
+		uint16_t w = k & 1 ? fixture_ramp_word_q(k / 2) : fixture_ramp_word_i(k / 2);
+
+		CHECK(dst[k] == ((double)(w >> 2) - 100.0) * 0.25);
+	}
+	CHECK(dst[0] == 103.0 && dst[1] == 102.75 && dst[2] == 359.0);
+	iio_conv_stream_close(&s);
+}
+
+/* Host columns follow the order of the channel list, not that of the device.
+ * With four channels a sample is I0, Q0, I1, Q1: two ramp pairs. */
+static void test_rx_pairing(void)
+{
+	const struct iio_channel *chans[4] = { rx_ch[2], rx_ch[3], rx_ch[0], rx_ch[1] };
+	struct iio_conv_stream *s = open_rx(chans, 4, 512, 2, &iq16);
+	int16_t dst[2 * 2 * 512];
+	const int16_t *col0 = dst, *col1 = dst + 2 * 512;
+	unsigned int j, bad = 0;
+
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_get_step(s) == 8);
+	CHECK(iio_conv_stream_get_columns(s) == 2);
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+	for (j = 0; j < 512; j++) {
+		bad += col0[2 * j] != fixture_ramp_i(2 * j + 1) || col0[2 * j + 1] != fixture_ramp_q(2 * j + 1);
+		bad += col1[2 * j] != fixture_ramp_i(2 * j) || col1[2 * j + 1] != fixture_ramp_q(2 * j);
+	}
+	CHECK(bad == 0);
+	CHECK(col0[0] == -2047 && col0[1] == 2046);
+	CHECK(col1[0] == -2048 && col1[1] == 2047);
+	CHECK(col0[2 * 511] == -1025 && col0[2 * 511 + 1] == 1024);
+	iio_conv_stream_close(&s);
+}
+
+static void test_rx_subset(void)
+{
+	const struct iio_channel *chans[2] = { rx_ch[3], rx_ch[0] };
+	struct iio_conv_spec spec = iq16;
+	struct iio_conv_stream *s;
+	int16_t dst[5 * 4];
+	int k;
+
+	/* two channels that are not neighbours, against their device order:
+	 * only they are enabled, so a sample is two words of the file */
+	spec.complex_iq = false;
+	s = open_rx(chans, 2, 8, 1, &spec);
+	if (s) {
+		CHECK(iio_conv_stream_get_step(s) == 4);
+		CHECK(iio_conv_stream_get_columns(s) == 2);
+		CHECK(!iio_conv_stream_is_complex(s));
+		CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+		for (k = 0; k < 8; k++) {
+			CHECK(dst[k] == 2047 - k);      /* voltage1_q: second word */
+			CHECK(dst[8 + k] == -2048 + k); /* voltage0_i: first word */
+		}
+		iio_conv_stream_close(&s);
+	}
+
+	s = open_rx(rx_ch, 5, 4, 1, &spec);
+	if (s) {
+		CHECK(iio_conv_stream_get_step(s) == 10);
+		CHECK(iio_conv_stream_get_columns(s) == 5);
+		CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+		/* sample j is words 5j .. 5j+4; voltage0_i of sample 1 is word 5 */
+		CHECK(dst[0] == fixture_ramp_i(0) && dst[1] == fixture_ramp_q(2));
+		iio_conv_stream_close(&s);
+	}
+}
+
+static void test_rx_flush(void)
+{
+	struct iio_conv_stream *s = open_rx(rx_ch, 2, 1024, 2, &iq16);
+	int16_t dst[2 * 1024];
+
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+	CHECK(ramp_mismatches(dst, 0, 1024) == 0);
+	/* on emu every block is ready at once: one frame per block is dropped */
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+	CHECK(ramp_mismatches(dst, 3 * 1024, 1024) == 0);
+	CHECK(dst[0] == 1024 && dst[1] == -1025);
+	iio_conv_stream_close(&s);
+}
+
+/* emu is always ready, so every wait policy delivers every frame */
+static void test_rx_wait_policies(void)
+{
+	static const int policies[] = { IIO_CONV_STREAM_TIMEOUT_CONTEXT,
+		IIO_CONV_STREAM_TIMEOUT_NONBLOCK, 50 };
+	int16_t dst[2 * 64];
+	unsigned int p, f;
+
+	for (p = 0; p < 3; p++) {
+		struct iio_conv_stream *s = open_rx(rx_ch, 2, 64, 3, &iq16);
 
 		if (!s)
 			continue;
-		CHECK(iio_conv_stream_get_nb_blocks(s) == blocks[b]);
-		for (f = 0; f < 3; f++) {
-			CHECK(iio_conv_stream_read(s, out) == N);
-			for (k = 0; k < N; k++)
-				CHECK(out[2 * k] == rx_value(f, k) && out[2 * k + 1] == -rx_value(f, k));
+		CHECK(iio_conv_stream_set_timeout(s, policies[p]) == 0);
+		for (f = 0; f < 5; f++) {
+			CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+			CHECK(ramp_mismatches(dst, 64 * f, 64) == 0);
 		}
-		iio_conv_stream_close(s);
+		iio_conv_stream_close(&s);
 	}
 }
 
-static void test_rx_defaults_and_flush(void)
+static void test_open_errors(void)
 {
-	struct iio_conv_stream *s = open_rx(IIO_CONV_I16, IIO_CONV_SCALE_NONE, 0, -1);
-	int16_t out[2 * N];
-
-	if (!s)
-		return;
-	CHECK(iio_conv_stream_get_nb_blocks(s) == 2); /* the default */
-	CHECK(iio_conv_stream_read(s, out) == N);
-	CHECK(out[0] == rx_value(0, 0));
-	/* on emu every block is ready at once, so a flush drops one frame per block */
-	CHECK(iio_conv_stream_flush(s) == 2);
-	CHECK(iio_conv_stream_read(s, out) == N);
-	CHECK(out[0] == rx_value(3, 0) && out[2 * N - 1] == -rx_value(3, N - 1));
-	iio_conv_stream_close(s);
-}
-
-/* two channels that are not neighbours, passed against their device order */
-static void test_rx_subset_in_caller_order(void)
-{
-	const struct iio_channel *chans[2] = { rx_v2, rx_i };
-	struct iio_conv_stream_params p = { .nb_samples = N, .nb_blocks = 2, .timeout_ms = -1,
-		.spec = { .type = IIO_CONV_F64, .layout = IIO_CONV_COLUMNS } };
+	const struct iio_channel *twice[2] = { rx_ch[0], rx_ch[0] };
+	const struct iio_channel *mixed[2] = { rx_ch[0], tx_ch[0] };
+	const struct iio_channel *hole[2] = { rx_ch[0], NULL };
+	const struct iio_channel *one;
+	struct iio_conv_spec real = iq16, bad_type = iq16;
 	struct iio_conv_stream *s = NULL;
-	int16_t d[2 * N];
-	double out[2 * N];
-	int k;
+	struct iio_context *xml;
+	char uri[PATH_MAX + 32];
 
-	/* mask {voltage0_i, voltage2}: I at byte 0, voltage2 (14 bits, shift 2) at byte 2 */
-	for (k = 0; k < N; k++) {
-		d[2 * k] = (int16_t)(k + 1);
-		d[2 * k + 1] = (int16_t)((2 * (k + 1)) << 2);
-	}
-	fx_write("conv-rx_buf0.bin", d, sizeof(d));
+	real.complex_iq = false;
+	bad_type.type = (enum iio_conv_type)10;
 
-	CHECK(iio_conv_stream_open(rx_buf, chans, 2, &p, &s) == 0);
-	if (!s)
-		return;
-	CHECK(iio_conv_stream_get_step(s) == 4);
-	CHECK(iio_conv_stream_read(s, out) == N);
-	for (k = 0; k < N; k++)
-		CHECK(out[k] == 2.0 * (k + 1) && out[N + k] == (double)(k + 1));
-	iio_conv_stream_close(s);
-}
+	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 0, 4, 1, false, &iq16, &s) == -EINVAL);
+	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 2, 0, 1, false, &iq16, &s) == -EINVAL);
+	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 2, 4, 0, false, &iq16, &s) == -EINVAL);
+	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 2, 4, 1, false, NULL, &s) == -EINVAL);
+	CHECK(iio_conv_stream_open(NULL, rx_ch, 2, 4, 1, false, &iq16, &s) == -EINVAL);
+	CHECK(iio_conv_stream_open(rx_buf, NULL, 2, 4, 1, false, &iq16, &s) == -EINVAL);
+	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 2, 4, 1, false, &iq16, NULL) == -EINVAL);
+	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 2, 4, 1, false, &bad_type, &s) == -EINVAL);
 
-static void test_errors(void)
-{
-	const struct iio_channel *iq[2] = { rx_i, rx_q }, *mixed[2] = { rx_i, tx0 };
-	const struct iio_channel *txc[2] = { tx0, tx1 };
-	struct iio_conv_stream_params p = { .nb_samples = N, .timeout_ms = -1,
-		.spec = { .type = IIO_CONV_I16, .complex_iq = true } };
-	struct iio_conv_stream_params bad;
-	struct iio_conv_stream *s = NULL;
-	int16_t buf[2 * N] = { 0 };
+	/* a channel listed twice, or missing */
+	CHECK(iio_conv_stream_open(rx_buf, twice, 2, 4, 1, false, &iq16, &s) == -EINVAL);
+	CHECK(iio_conv_stream_open(rx_buf, hole, 2, 4, 1, false, &iq16, &s) == -EINVAL);
+	/* channels that are not scan elements of this buffer: another device's,
+	 * one without samples, one of the other direction */
+	CHECK(iio_conv_stream_open(rx_buf, tx_ch, 2, 4, 1, false, &iq16, &s) == -EINVAL);
+	CHECK(iio_conv_stream_open(rx_buf, mixed, 2, 4, 1, false, &iq16, &s) == -EINVAL);
+	one = iio_device_find_channel(tx, "altvoltage0", true);
+	CHECK(one != NULL);
+	CHECK(iio_conv_stream_open(tx_buf, &one, 1, 4, 1, false, &real, &s) == -EINVAL);
+	one = iio_device_find_channel(multi, "voltage0", false);
+	CHECK(one != NULL);
+	CHECK(iio_conv_stream_open(iio_device_get_buffer(multi, 1), &one, 1, 4, 1, false, &real, &s) == -EINVAL);
 
-	write_rx_iq();
-	CHECK(iio_conv_stream_open(NULL, iq, 2, &p, &s) == -EINVAL);
-	CHECK(iio_conv_stream_open(rx_buf, NULL, 2, &p, &s) == -EINVAL);
-	CHECK(iio_conv_stream_open(rx_buf, iq, 0, &p, &s) == -EINVAL);
-	CHECK(iio_conv_stream_open(rx_buf, iq, 2, NULL, &s) == -EINVAL);
-	CHECK(iio_conv_stream_open(rx_buf, iq, 2, &p, NULL) == -EINVAL);
-	bad = p; bad.nb_samples = 0;
-	CHECK(iio_conv_stream_open(rx_buf, iq, 2, &bad, &s) == -EINVAL);
-	CHECK(iio_conv_stream_open(rx_buf, mixed, 2, &p, &s) == -EINVAL); /* other device */
-	CHECK(iio_conv_stream_open(rx_buf, iq, 1, &p, &s) == -EINVAL);    /* odd count, complex */
-	bad = p; bad.spec.scale = IIO_CONV_SCALE_FULLSCALE;                /* scaling needs floats */
-	CHECK(iio_conv_stream_open(rx_buf, iq, 2, &bad, &s) == -EINVAL);
+	/* I/Q pairing needs an even number of channels */
+	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 3, 4, 1, false, &iq16, &s) == -EINVAL);
+	/* nothing to repeat on an input */
+	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 2, 4, 1, true, &iq16, &s) == -EINVAL);
+
+	/* formats the converter does not handle: repeated and float storage */
+	one = iio_device_find_channel(zoo, "rot_quaternion", false);
+	CHECK(one != NULL);
+	CHECK(iio_conv_stream_open(iio_device_get_buffer(zoo, 0), &one, 1, 4, 1, false, &real, &s) == -ENOTSUP);
+	one = iio_device_find_channel(zoo, "voltage3", false);
+	CHECK(one != NULL);
+	CHECK(iio_conv_stream_open(iio_device_get_buffer(zoo, 0), &one, 1, 4, 1, false, &real, &s) == -ENOTSUP);
 	CHECK(s == NULL);
 
-	/* wrong direction */
-	CHECK(iio_conv_stream_open(rx_buf, iq, 2, &p, &s) == 0);
-	if (s) {
-		CHECK(iio_conv_stream_write(s, buf) == -EPERM);
-		CHECK(iio_conv_stream_read(s, NULL) == -EINVAL);
-		iio_conv_stream_close(s);
+	/* a backend without buffers: the error of iio_buffer_open() */
+	fixture_uri(dir, "xml", uri, sizeof(uri));
+	xml = iio_create_context(NULL, uri);
+	CHECK(!iio_err(xml));
+	if (!iio_err(xml)) {
+		const struct iio_device *dev = iio_context_find_device(xml, "emu-rx");
+		const struct iio_channel *chans[2] = {
+			iio_device_find_channel(dev, "voltage0_i", false),
+			iio_device_find_channel(dev, "voltage0_q", false),
+		};
+
+		CHECK(iio_conv_stream_open(iio_device_get_buffer(dev, 0), chans, 2, 4, 1, false,
+					&iq16, &s) == -ENOSYS);
+		CHECK(s == NULL);
+		iio_context_destroy(xml);
 	}
-	s = NULL;
-	CHECK(iio_conv_stream_open(tx_buf, txc, 2, &p, &s) == 0);
+}
+
+/* emu cannot start a receive buffer without its data file. The open must fail
+ * at once: a dequeue from a buffer that is not started stalls for 5 s on emu
+ * and for ever on other paths. */
+static void test_rx_missing_file(void)
+{
+	static unsigned char ramp[4 * FIXTURE_RAMP_LEN];
+	struct iio_conv_stream *s = NULL;
+	int16_t dst[2 * 4];
+	char path[PATH_MAX];
+	double t0;
+
+	CHECK(fixture_read_file(dir, "emu-rx_buf0.bin", ramp, sizeof(ramp)) == (long)sizeof(ramp));
+	CHECK(fixture_path(dir, "emu-rx_buf0.bin", path) == 0);
+	CHECK(remove(path) == 0);
+
+	t0 = now_s();
+	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 2, 1024, 2, false, &iq16, &s) == -ENOENT);
+	CHECK(now_s() - t0 < 1.0);
+	CHECK(s == NULL);
+
+	CHECK(fixture_write_file(dir, "emu-rx_buf0.bin", ramp, sizeof(ramp)) == 0);
+	s = open_rx(rx_ch, 2, 4, 1, &iq16);
+	if (s) {
+		CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+		CHECK(ramp_mismatches(dst, 0, 4) == 0);
+		iio_conv_stream_close(&s);
+	}
+}
+
+static void test_close_twice(void)
+{
+	struct iio_conv_stream *s = open_rx(rx_ch, 2, 16, 2, &iq16);
+	int16_t dst[2 * 16];
+	unsigned int i;
+
+	CHECK(s != NULL);
+	iio_conv_stream_close(&s);
+	CHECK(s == NULL);
+	iio_conv_stream_close(&s);
+	CHECK(s == NULL);
+	iio_conv_stream_close(NULL);
+
+	/* nothing of a closed stream is left behind: every new one starts at
+	 * the beginning of the file */
+	for (i = 0; i < 50; i++) {
+		s = open_rx(rx_ch, 2, 16, 2, &iq16);
+		if (!s)
+			break;
+		memset(dst, 0x55, sizeof(dst));
+		CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+		CHECK(ramp_mismatches(dst, 0, 16) == 0);
+		iio_conv_stream_close(&s);
+		CHECK(s == NULL);
+	}
+}
+
+static void test_wrong_direction(void)
+{
+	struct iio_conv_stream *s = open_rx(rx_ch, 2, 1024, 2, &iq16);
+	int16_t buf[2 * 1024] = { 0 };
+
+	if (s) {
+		CHECK(iio_conv_stream_write(s, buf, 4) == -EBADF);
+		CHECK(iio_conv_stream_write_typed(s, buf, 4, IIO_CONV_I16, true) == -EBADF);
+		CHECK(iio_conv_stream_read(s, NULL) == -EINVAL);
+		CHECK(iio_conv_stream_set_timeout(s, -2) == -EINVAL);
+		CHECK(iio_conv_stream_set_timeout(s, IIO_CONV_STREAM_TIMEOUT_CONTEXT) == 0);
+		iio_conv_stream_close(&s);
+	}
+
+	/* an output buffer gives a transmit stream */
+	CHECK(iio_conv_stream_open(tx_buf, tx_ch, 2, 4, 3, false, &iq16, &s) == 0);
 	if (s) {
 		CHECK(iio_conv_stream_is_output(s));
-		CHECK(iio_conv_stream_read(s, buf) == -EPERM);
-		CHECK(iio_conv_stream_flush(s) == -EPERM);
-		CHECK(iio_conv_stream_write(s, NULL) == -EINVAL);
-		iio_conv_stream_close(s);
-	}
-	CHECK(iio_conv_stream_read(NULL, buf) == -EINVAL);
-	CHECK(iio_conv_stream_write(NULL, buf) == -EINVAL);
-	CHECK(iio_conv_stream_flush(NULL) == -EINVAL);
-	iio_conv_stream_close(NULL);
-}
-
-/* --- transmit: emu writes a block to <dir>/conv-tx_buf0.bin when it is
- * dequeued, replacing the file, so the file shows the last frame sent. */
-
-static struct iio_conv_stream *open_tx(enum iio_conv_type type, enum iio_conv_scale scale,
-		unsigned int nb_blocks, bool cyclic)
-{
-	const struct iio_channel *chans[2] = { tx0, tx1 };
-	struct iio_conv_stream_params p = { .nb_samples = N, .nb_blocks = nb_blocks,
-		.cyclic = cyclic, .timeout_ms = -1,
-		.spec = { .type = type, .scale = scale, .complex_iq = true } };
-	struct iio_conv_stream *s = NULL;
-
-	fx_remove("conv-tx_buf0.bin");
-	CHECK(iio_conv_stream_open(tx_buf, chans, 2, &p, &s) == 0);
-	return s;
-}
-
-/* frame number f as doubles in [-1, 1) and the int16 words it must become */
-static void tx_frame(unsigned int f, double *host, int16_t *raw)
-{
-	int k;
-
-	for (k = 0; k < N; k++) {
-		raw[2 * k] = (int16_t)((k - 16) * 100 + (int)f);
-		raw[2 * k + 1] = (int16_t)(-7 * k - (int)f);
-		host[2 * k] = raw[2 * k] / 32768.0;
-		host[2 * k + 1] = raw[2 * k + 1] / 32768.0;
-	}
-}
-
-static void check_tx_file(const int16_t *raw)
-{
-	int16_t got[2 * N + 8];
-
-	CHECK(fx_read("conv-tx_buf0.bin", got, sizeof(got)) == (long)(2 * N * sizeof(int16_t)));
-	CHECK(memcmp(got, raw, 2 * N * sizeof(int16_t)) == 0);
-}
-
-static void test_tx_frames(void)
-{
-	static const unsigned int blocks[] = { 1, 2, 3 };
-	double host[2 * N];
-	int16_t raw[2 * N];
-	unsigned int b, f;
-
-	for (b = 0; b < 3; b++) {
-		struct iio_conv_stream *s = open_tx(IIO_CONV_F64, IIO_CONV_SCALE_FULLSCALE, blocks[b], false);
-
-		if (!s)
-			continue;
 		CHECK(iio_conv_stream_get_step(s) == 4);
-		CHECK(iio_conv_stream_get_host_step(s) == 16);
-		for (f = 0; f < 5; f++) {
-			tx_frame(f, host, raw);
-			CHECK(iio_conv_stream_write(s, host) == N);
-		}
-		/* closing lets the last frame out */
-		iio_conv_stream_close(s);
-		check_tx_file(raw);
+		CHECK(iio_conv_stream_get_nb_blocks(s) == 3);
+		CHECK(iio_conv_stream_read(s, buf) == -EBADF);
+		iio_conv_stream_close(&s);
 	}
-}
 
-static void test_tx_one_frame_then_close(void)
-{
-	struct iio_conv_stream *s = open_tx(IIO_CONV_I16, IIO_CONV_SCALE_NONE, 2, false);
-	double host[2 * N];
-	int16_t raw[2 * N];
-
-	if (!s)
-		return;
-	tx_frame(9, host, raw);
-	CHECK(iio_conv_stream_write(s, raw) == N); /* int16 in, same words out */
-	iio_conv_stream_close(s);
-	check_tx_file(raw);
-}
-
-static void test_tx_cyclic(void)
-{
-	struct iio_conv_stream *s = open_tx(IIO_CONV_F64, IIO_CONV_SCALE_FULLSCALE, 2, true);
-	double host[2 * N];
-	int16_t raw[2 * N];
-
-	if (!s)
-		return;
-	tx_frame(1, host, raw);
-	CHECK(iio_conv_stream_write(s, host) == N);
-	CHECK(iio_conv_stream_write(s, host) == -EBUSY);
-	iio_conv_stream_close(s);
-}
-
-/* emu cannot start a receive buffer without its data file. Opening must fail
- * at once and leave nothing behind (emu would stall 5 s per block if a block
- * were dequeued after a failed start). */
-static void test_rx_start_failure_is_prompt(void)
-{
-	const struct iio_channel *chans[2] = { rx_i, rx_q };
-	struct iio_conv_stream_params p = { .nb_samples = N, .nb_blocks = 2, .timeout_ms = -1,
-		.spec = { .type = IIO_CONV_I16, .complex_iq = true } };
-	struct iio_conv_stream *s = NULL;
-	double t0 = now_ms();
-	int ret;
-
-	fx_remove("conv-rx_buf0.bin");
-	ret = iio_conv_stream_open(rx_buf, chans, 2, &p, &s);
-	CHECK(ret < 0);
-	CHECK(s == NULL);
-	CHECK(now_ms() - t0 < 2000.0);
-	if (s)
-		iio_conv_stream_close(s);
+	CHECK(iio_conv_stream_read(NULL, buf) == -EINVAL);
+	CHECK(iio_conv_stream_write(NULL, buf, 4) == -EINVAL);
+	CHECK(iio_conv_stream_write_typed(NULL, buf, 4, IIO_CONV_I16, true) == -EINVAL);
+	CHECK(iio_conv_stream_flush(NULL) == -EINVAL);
+	CHECK(iio_conv_stream_set_timeout(NULL, 0) == -EINVAL);
 }
 
 int main(int argc, char **argv)
 {
-	char uri[700];
+	static const char *const rx_ids[5] = { "voltage0_i", "voltage0_q", "voltage1_i",
+		"voltage1_q", "voltage2" };
+	char uri[PATH_MAX + 32];
+	unsigned int i;
+	int ret;
 
 	if (argc < 2)
 		return 2;
-	fx_setup(argv[1]);
-	snprintf(uri, sizeof(uri), "emu:%s", fx_xml);
+	ret = fixture_setup(argv[1], dir);
+	CHECK(ret == 0);
+	if (ret)
+		TEST_MAIN_RETURN();
+	fixture_uri(dir, "emu", uri, sizeof(uri));
 	ctx = iio_create_context(NULL, uri);
 	CHECK(!iio_err(ctx));
 	if (iio_err(ctx)) {
-		fx_teardown();
+		fixture_cleanup(dir);
 		TEST_MAIN_RETURN();
 	}
-	rx = iio_context_find_device(ctx, "conv-rx");
-	tx = iio_context_find_device(ctx, "conv-tx");
-	rx_buf = iio_device_get_buffer(rx, 0);
-	tx_buf = iio_device_get_buffer(tx, 0);
-	rx_i = iio_device_find_channel(rx, "voltage0_i", false);
-	rx_q = iio_device_find_channel(rx, "voltage0_q", false);
-	rx_v2 = iio_device_find_channel(rx, "voltage2", false);
-	tx0 = iio_device_find_channel(tx, "voltage0", true);
-	tx1 = iio_device_find_channel(tx, "voltage1", true);
-	CHECK(rx_buf && tx_buf && rx_i && rx_q && rx_v2 && tx0 && tx1);
 
-	test_rx_complex_single();
-	test_rx_int16();
-	test_rx_defaults_and_flush();
-	test_rx_subset_in_caller_order();
-	test_errors();
-	test_tx_frames();
-	test_tx_one_frame_then_close();
-	test_tx_cyclic();
-	test_rx_start_failure_is_prompt();
+	rx = iio_context_find_device(ctx, "emu-rx");
+	tx = iio_context_find_device(ctx, "emu-tx");
+	multi = iio_context_find_device(ctx, "emu-multi");
+	zoo = iio_context_find_device(ctx, "iio:device4");
+	CHECK(rx && tx && multi && zoo);
+	if (rx && tx && multi && zoo) {
+		rx_buf = iio_device_get_buffer(rx, 0);
+		tx_buf = iio_device_get_buffer(tx, 0);
+		for (i = 0; i < 5; i++)
+			rx_ch[i] = iio_device_find_channel(rx, rx_ids[i], false);
+		for (i = 0; i < 4; i++)
+			tx_ch[i] = iio_device_find_channel(tx, rx_ids[i], true);
+		CHECK(rx_buf && tx_buf && rx_ch[0] && rx_ch[1] && rx_ch[2] && rx_ch[3] && rx_ch[4]);
+		CHECK(tx_ch[0] && tx_ch[1] && tx_ch[2] && tx_ch[3]);
+
+		test_rx_frames();
+		test_rx_one_block();
+		test_rx_raw();
+		test_rx_float();
+		test_rx_scale_iio();
+		test_rx_pairing();
+		test_rx_subset();
+		test_rx_flush();
+		test_rx_wait_policies();
+		test_open_errors();
+		test_rx_missing_file();
+		test_close_twice();
+		test_wrong_direction();
+	}
 
 	iio_context_destroy(ctx);
-	fx_teardown();
+	fixture_cleanup(dir);
 	TEST_MAIN_RETURN();
 }

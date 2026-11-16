@@ -1,11 +1,16 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Streams: a buffer stream, its blocks and a converter behind one object, so
- * that a frame goes between the hardware and a host array in one call.
+ * Stream layer: a buffer stream, its blocks and a converter behind one
+ * object, so that a frame goes between the hardware and a host array in one
+ * call. Uses only public libiio functions and iio_conv_*.
  *
- * Built on explicit blocks rather than libiio's iio_stream helper, which can
- * neither transmit cyclically nor hand a frame over in the call that
- * received it.
+ * Rules kept throughout:
+ * - The layout comes from the mask the buffer stream really has, never from
+ *   the one built here: hardware may enable more channels than asked for.
+ * - A block is dequeued only while the buffer is started. Otherwise emu
+ *   stalls for 5 s and libiio's generic block path waits for ever.
+ * - The context timeout is never changed. A time limit of the stream's own
+ *   is kept by polling.
  */
 #include <iio/iio-conv-stream.h>
 
@@ -15,20 +20,24 @@
 #include <stdlib.h>
 #include <time.h>
 
-#define DEFAULT_NB_BLOCKS 2
-#define POLL_INTERVAL_NS 200000 /* 0.2 ms */
+#define NB_TYPES (IIO_CONV_F64 + 1)
+#define POLL_INTERVAL_NS 1000000 /* 1 ms */
 
 struct iio_conv_stream {
 	struct iio_buffer_stream *bs;
 	struct iio_conv *conv;
 	struct iio_block **blocks;
-	bool *queued;           /* the block is with the backend */
+	bool *queued;       /* the block is with the backend, as far as we know */
 	unsigned int nb_blocks;
-	unsigned int next;      /* block the next read or write uses */
-	size_t nb_samples, step;
-	bool is_output, cyclic, cyclic_sent;
-	bool started;           /* the buffer is enabled */
-	int timeout_ms;
+	/* Blocks are queued in rotation, so this is the one queued longest
+	 * ago: the next to come back. */
+	unsigned int curr;
+	unsigned int nb_chans;
+	size_t samples, step;
+	enum iio_conv_type type;
+	bool complex_iq, output, cyclic;
+	bool started;       /* the buffer is enabled */
+	int timeout_ms;     /* wait policy */
 };
 
 static double elapsed_ms(const struct timespec *since)
@@ -42,77 +51,130 @@ static double elapsed_ms(const struct timespec *since)
 
 static bool not_ready(int ret)
 {
-	return ret == -EBUSY || ret == -EAGAIN || ret == -ETIMEDOUT;
+	return ret == -ETIMEDOUT || ret == -EBUSY || ret == -EAGAIN;
 }
 
-/* Take a queued block back from the backend, waiting as the stream's timeout
- * says. Returns 0 when the block is ours, 1 when it did not come back in
- * time, or a negative errno. */
-static int take_block(struct iio_conv_stream *s, unsigned int b)
+/* Wait for block i to come back under a wait policy. Returns 1 when it is
+ * ours again, 0 when it did not come back in time, or a negative errno. */
+static int wait_block(struct iio_conv_stream *s, unsigned int i, int timeout_ms)
 {
 	const struct timespec pause = { 0, POLL_INTERVAL_NS };
 	struct timespec start;
 	int ret;
 
-	if (s->timeout_ms < 0) {
-		/* libiio blocks; its own timeout means "nothing yet" */
-		ret = iio_block_dequeue(s->blocks[b], false);
-		if (ret == -ETIMEDOUT)
-			return 1;
+	if (timeout_ms < 0) {
+		/* libiio blocks, for as long as the context timeout allows */
+		ret = iio_block_dequeue(s->blocks[i], false);
 	} else {
 		clock_gettime(CLOCK_MONOTONIC, &start);
 		for (;;) {
-			ret = iio_block_dequeue(s->blocks[b], true);
-			if (!not_ready(ret))
+			ret = iio_block_dequeue(s->blocks[i], true);
+			if (!not_ready(ret) || elapsed_ms(&start) >= (double)timeout_ms)
 				break;
-			if (elapsed_ms(&start) >= (double)s->timeout_ms)
-				return 1;
 			nanosleep(&pause, NULL);
 		}
 	}
 
+	if (not_ready(ret))
+		return 0;
 	if (ret < 0)
 		return ret;
-	s->queued[b] = false;
-	return 0;
+	s->queued[i] = false;
+	return 1;
 }
 
-int iio_conv_stream_open(struct iio_buffer *buf, const struct iio_channel *const *chans,
-		unsigned int nb_chans, const struct iio_conv_stream_params *params,
-		struct iio_conv_stream **stream)
+/* One turn of the receive rotation: take the oldest block back, convert it
+ * into dst (NULL drops the frame) and queue it again. */
+static int rx_turn(struct iio_conv_stream *s, void *dst, int timeout_ms)
 {
-	const struct iio_device *dev;
-	struct iio_channels_mask *mask;
-	struct iio_conv_stream *s;
-	unsigned int i;
+	unsigned int b = s->curr;
+	bool frame = false;
+	ssize_t n;
 	int ret;
 
-	if (!buf || !chans || !nb_chans || !params || !stream || !params->nb_samples)
+	/* A block that is not queued is one whose last enqueue failed: it
+	 * holds nothing new and only needs queuing again. */
+	if (s->queued[b]) {
+		ret = wait_block(s, b, timeout_ms);
+		if (ret == -EPERM) {
+			/* libiio does not have the block. Its generic block
+			 * path forgets a block whose dequeue timed out; the
+			 * block then holds no frame. */
+			s->queued[b] = false;
+		} else if (ret <= 0) {
+			return ret;
+		} else {
+			frame = true;
+		}
+	}
+
+	if (frame && dst) {
+		n = iio_conv_read(s->conv, s->blocks[b], dst, s->samples);
+		if (n < 0)
+			return (int)n;
+	}
+
+	/* Back to the backend for the next capture. It is now the block
+	 * queued last, so the next one is the oldest. */
+	ret = iio_block_enqueue(s->blocks[b], 0, false);
+	if (ret < 0)
+		return ret;
+	s->queued[b] = true;
+	s->curr = (b + 1) % s->nb_blocks;
+
+	return frame ? IIO_CONV_STREAM_FRAME : IIO_CONV_STREAM_NO_FRAME;
+}
+
+int iio_conv_stream_open(struct iio_buffer *buf,
+		const struct iio_channel *const *chans, unsigned int nb_chans,
+		size_t samples_per_frame, unsigned int nb_blocks, bool cyclic,
+		const struct iio_conv_spec *spec, struct iio_conv_stream **stream)
+{
+	struct iio_channels_mask *mask;
+	struct iio_conv_stream *s;
+	unsigned int i, k, nb_scan;
+	int ret;
+
+	if (!buf || !chans || !nb_chans || !samples_per_frame || !nb_blocks || !spec || !stream)
+		return -EINVAL;
+	if ((unsigned int)spec->type >= NB_TYPES)
+		return -EINVAL;
+	if (cyclic && !iio_buffer_is_output(buf))
 		return -EINVAL;
 
-	dev = iio_buffer_get_device(buf);
+	/* every channel a scan element of this buffer, none twice */
+	nb_scan = iio_buffer_get_scan_elements_count(buf);
 	for (i = 0; i < nb_chans; i++) {
-		if (!chans[i] || iio_channel_get_device(chans[i]) != dev ||
-				!iio_channel_is_scan_element(chans[i]))
+		if (!chans[i])
 			return -EINVAL;
+		for (k = 0; k < nb_scan; k++)
+			if (iio_buffer_get_scan_element(buf, k) == chans[i])
+				break;
+		if (k == nb_scan)
+			return -EINVAL;
+		for (k = 0; k < i; k++)
+			if (chans[k] == chans[i])
+				return -EINVAL;
 	}
 
 	s = calloc(1, sizeof(*s));
 	if (!s)
 		return -ENOMEM;
-	s->nb_samples = params->nb_samples;
-	s->nb_blocks = params->nb_blocks ? params->nb_blocks : DEFAULT_NB_BLOCKS;
-	s->timeout_ms = params->timeout_ms;
-	s->is_output = iio_buffer_is_output(buf);
-	s->cyclic = s->is_output && params->cyclic;
+	s->output = iio_buffer_is_output(buf);
+	s->cyclic = cyclic;
+	s->nb_blocks = cyclic ? 1 : nb_blocks;
+	s->nb_chans = nb_chans;
+	s->samples = samples_per_frame;
+	s->type = spec->type;
+	s->complex_iq = spec->complex_iq;
+	s->timeout_ms = IIO_CONV_STREAM_TIMEOUT_CONTEXT;
 
-	/* Enable exactly the channels asked for. The buffer keeps its own
-	 * copy of the mask, and the hardware may turn on more: from here on
-	 * only the buffer's mask counts. */
-	mask = iio_create_channels_mask(iio_device_get_channels_count(dev));
+	/* Enable exactly the channels asked for. The buffer stream keeps its
+	 * own copy of the mask, which the backend may extend. */
+	mask = iio_create_channels_mask(iio_device_get_channels_count(iio_buffer_get_device(buf)));
 	if (!mask) {
-		free(s);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_close;
 	}
 	for (i = 0; i < nb_chans; i++)
 		iio_channel_enable(chans[i], mask);
@@ -120,16 +182,16 @@ int iio_conv_stream_open(struct iio_buffer *buf, const struct iio_channel *const
 	iio_channels_mask_destroy(mask);
 	ret = iio_err(s->bs);
 	if (ret) {
-		free(s);
-		return ret;
+		s->bs = NULL;
+		goto err_close;
 	}
 
 	ret = iio_conv_create(iio_buffer_stream_get_channels_mask(s->bs), chans, nb_chans,
-			&params->spec, &s->conv);
+			spec, &s->conv);
 	if (ret)
 		goto err_close;
 	s->step = iio_conv_get_step(s->conv);
-	if (s->nb_samples > SIZE_MAX / s->step) {
+	if (s->samples > SIZE_MAX / s->step) {
 		ret = -EINVAL;
 		goto err_close;
 	}
@@ -142,7 +204,7 @@ int iio_conv_stream_open(struct iio_buffer *buf, const struct iio_channel *const
 	}
 	for (i = 0; i < s->nb_blocks; i++) {
 		struct iio_block *block = iio_buffer_stream_create_block(s->bs,
-				s->nb_samples * s->step);
+				s->samples * s->step);
 
 		ret = iio_err(block);
 		if (ret)
@@ -150,10 +212,9 @@ int iio_conv_stream_open(struct iio_buffer *buf, const struct iio_channel *const
 		s->blocks[i] = block;
 	}
 
-	if (!s->is_output) {
+	if (!s->output) {
 		/* Capture starts now: every block goes to the backend, then
-		 * the buffer is enabled. A transmit buffer is enabled by the
-		 * first write instead. */
+		 * the buffer is enabled. */
 		for (i = 0; i < s->nb_blocks; i++) {
 			ret = iio_block_enqueue(s->blocks[i], 0, false);
 			if (ret < 0)
@@ -170,143 +231,31 @@ int iio_conv_stream_open(struct iio_buffer *buf, const struct iio_channel *const
 	return 0;
 
 err_close:
-	iio_conv_stream_close(s);
+	/* nothing is dequeued on the way out, see iio_conv_stream_close() */
+	iio_conv_stream_close(&s);
 	return ret;
 }
 
-ssize_t iio_conv_stream_read(struct iio_conv_stream *s, void *dst)
+void iio_conv_stream_close(struct iio_conv_stream **stream)
 {
-	unsigned int b;
-	ssize_t n;
-	int ret;
+	struct iio_conv_stream *s;
+	unsigned int i;
 
-	if (!s || !dst)
-		return -EINVAL;
-	if (s->is_output)
-		return -EPERM;
-
-	b = s->next;
-	ret = take_block(s, b);
-	if (ret)
-		return ret > 0 ? 0 : ret;
-
-	n = iio_conv_read(s->conv, s->blocks[b], dst, s->nb_samples);
-	if (n < 0)
-		return n;
-
-	/* give the block back for the next capture */
-	ret = iio_block_enqueue(s->blocks[b], 0, false);
-	if (ret < 0)
-		return ret;
-	s->queued[b] = true;
-	s->next = (b + 1) % s->nb_blocks;
-
-	return n;
-}
-
-ssize_t iio_conv_stream_write(struct iio_conv_stream *s, const void *src)
-{
-	unsigned int b;
-	ssize_t n;
-	int ret;
-
-	if (!s || !src)
-		return -EINVAL;
-	if (!s->is_output)
-		return -EPERM;
-	if (s->cyclic_sent)
-		return -EBUSY;
-
-	b = s->next;
-	if (s->queued[b]) {
-		/* every block is out: wait for the oldest frame to finish */
-		ret = take_block(s, b);
-		if (ret)
-			return ret > 0 ? 0 : ret;
-	}
-
-	n = iio_conv_write(s->conv, s->blocks[b], src, s->nb_samples);
-	if (n < 0)
-		return n;
-
-	ret = iio_block_enqueue(s->blocks[b], s->nb_samples * s->step, s->cyclic);
-	if (ret < 0)
-		return ret;
-	s->queued[b] = true;
-
-	if (!s->started) {
-		ret = iio_buffer_stream_start(s->bs);
-		if (ret < 0)
-			return ret;
-		s->started = true;
-	}
-
-	s->cyclic_sent = s->cyclic;
-	s->next = (b + 1) % s->nb_blocks;
-
-	return n;
-}
-
-int iio_conv_stream_flush(struct iio_conv_stream *s)
-{
-	unsigned int i, b;
-	int ret;
-
-	if (!s)
-		return -EINVAL;
-	if (s->is_output)
-		return -EPERM;
-
-	/* whatever is already captured goes straight back, oldest first */
-	for (i = 0; i < s->nb_blocks; i++) {
-		b = s->next;
-		ret = iio_block_dequeue(s->blocks[b], true);
-		if (not_ready(ret))
-			break;
-		if (ret < 0)
-			return ret;
-		s->queued[b] = false;
-
-		ret = iio_block_enqueue(s->blocks[b], 0, false);
-		if (ret < 0)
-			return ret;
-		s->queued[b] = true;
-		s->next = (b + 1) % s->nb_blocks;
-	}
-
-	return (int)i;
-}
-
-void iio_conv_stream_close(struct iio_conv_stream *s)
-{
-	unsigned int i, b;
-
-	if (!s)
+	if (!stream || !*stream)
 		return;
+	s = *stream;
+	*stream = NULL;
 
-	if (s->bs && s->blocks && s->queued && s->started) {
-		/* Frames written to a non-cyclic transmit stream are allowed
-		 * to go out. Anything else is abandoned: unblock the backend
-		 * first so that collecting the blocks cannot hang.
-		 *
-		 * Blocks are only ever collected from a started buffer: some
-		 * backends wait a long time for a block that can never
-		 * complete. */
-		if (!s->is_output || s->cyclic)
-			iio_buffer_stream_cancel(s->bs);
-		for (i = 0; i < s->nb_blocks; i++) {
-			b = (s->next + i) % s->nb_blocks; /* oldest first */
-			if (s->queued[b])
-				iio_block_dequeue(s->blocks[b], false);
-		}
-	}
-
-	for (i = 0; s->blocks && i < s->nb_blocks; i++)
-		if (s->blocks[i])
-			iio_block_destroy(s->blocks[i]);
 	if (s->bs) {
+		/* From the cancel on, no block is dequeued: a cancelled
+		 * stream fails every dequeue, a stopped one never completes
+		 * it. Destroying a block that is still queued is fine. */
+		iio_buffer_stream_cancel(s->bs);
 		if (s->started)
 			iio_buffer_stream_stop(s->bs);
+		for (i = 0; s->blocks && i < s->nb_blocks; i++)
+			if (s->blocks[i])
+				iio_block_destroy(s->blocks[i]);
 		iio_buffer_close(s->bs);
 	}
 
@@ -316,33 +265,99 @@ void iio_conv_stream_close(struct iio_conv_stream *s)
 	free(s);
 }
 
-void iio_conv_stream_set_timeout(struct iio_conv_stream *s, int timeout_ms)
+int iio_conv_stream_set_timeout(struct iio_conv_stream *stream, int timeout_ms)
 {
-	if (s)
-		s->timeout_ms = timeout_ms;
+	if (!stream || timeout_ms < IIO_CONV_STREAM_TIMEOUT_CONTEXT)
+		return -EINVAL;
+	stream->timeout_ms = timeout_ms;
+	return 0;
 }
 
-bool iio_conv_stream_is_output(const struct iio_conv_stream *s)
+int iio_conv_stream_read(struct iio_conv_stream *stream, void *dst)
 {
-	return s->is_output;
+	if (!stream)
+		return -EINVAL;
+	if (stream->output)
+		return -EBADF;
+	if (!dst)
+		return -EINVAL;
+
+	return rx_turn(stream, dst, stream->timeout_ms);
 }
 
-size_t iio_conv_stream_get_nb_samples(const struct iio_conv_stream *s)
+int iio_conv_stream_write(struct iio_conv_stream *stream, const void *src,
+		size_t nb_samples)
 {
-	return s->nb_samples;
+	if (!stream)
+		return -EINVAL;
+	return iio_conv_stream_write_typed(stream, src, nb_samples, stream->type,
+			stream->complex_iq);
 }
 
-unsigned int iio_conv_stream_get_nb_blocks(const struct iio_conv_stream *s)
+int iio_conv_stream_write_typed(struct iio_conv_stream *stream, const void *src,
+		size_t nb_samples, enum iio_conv_type type, bool src_complex)
 {
-	return s->nb_blocks;
+	(void)src; (void)nb_samples; (void)type; (void)src_complex;
+
+	if (!stream)
+		return -EINVAL;
+	if (!stream->output)
+		return -EBADF;
+	return -ENOSYS; /* transmit is not implemented yet */
 }
 
-size_t iio_conv_stream_get_step(const struct iio_conv_stream *s)
+int iio_conv_stream_flush(struct iio_conv_stream *stream)
 {
-	return s->step;
+	unsigned int i;
+	int ret;
+
+	if (!stream)
+		return -EINVAL;
+	if (stream->output)
+		return -ENOSYS; /* transmit is not implemented yet */
+
+	/* whatever is captured goes straight back, oldest first */
+	for (i = 0; i < stream->nb_blocks; i++) {
+		ret = rx_turn(stream, NULL, IIO_CONV_STREAM_TIMEOUT_NONBLOCK);
+		if (ret < 0)
+			return ret;
+		if (ret == IIO_CONV_STREAM_NO_FRAME)
+			break;
+	}
+	return IIO_CONV_STREAM_FRAME;
 }
 
-size_t iio_conv_stream_get_host_step(const struct iio_conv_stream *s)
+size_t iio_conv_stream_get_samples(const struct iio_conv_stream *stream)
 {
-	return iio_conv_get_host_step(s->conv);
+	return stream->samples;
+}
+
+unsigned int iio_conv_stream_get_columns(const struct iio_conv_stream *stream)
+{
+	return stream->complex_iq ? stream->nb_chans / 2 : stream->nb_chans;
+}
+
+size_t iio_conv_stream_get_step(const struct iio_conv_stream *stream)
+{
+	return stream->step;
+}
+
+unsigned int iio_conv_stream_get_nb_blocks(const struct iio_conv_stream *stream)
+{
+	return stream->nb_blocks;
+}
+
+enum iio_conv_type iio_conv_stream_get_type(const struct iio_conv_stream *stream)
+{
+	return stream->type;
+}
+
+bool iio_conv_stream_is_complex(const struct iio_conv_stream *stream)
+{
+	return stream->complex_iq;
+}
+
+bool iio_conv_stream_is_output(const struct iio_conv_stream *stream)
+{
+	return stream->output;
 }

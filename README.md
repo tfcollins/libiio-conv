@@ -76,39 +76,49 @@ iio_block_enqueue(block, n * iio_conv_get_step(tx_conv), false);
 the same on plain memory with hand-written channel descriptors and need no
 libiio objects.
 
-## Streams
+## Stream layer
 
-`iio-conv-stream.h` puts the buffer, its blocks and the converter behind one
-object, so that a frame is one call:
+`iio-conv-stream.h` puts the buffer stream, its blocks and the converter
+behind one object, so that a frame is one call:
 
 ```c
 #include <iio/iio-conv-stream.h>
 
-struct iio_conv_stream_params params = {
-	.nb_samples = 16384,   /* frame length */
-	.nb_blocks = 2,        /* kernel buffers */
-	.timeout_ms = 1000,
-	.spec = { .type = IIO_CONV_F32, .scale = IIO_CONV_SCALE_FULLSCALE, .complex_iq = true },
-};
+const struct iio_channel *chans[2] = { rx_i, rx_q };
+struct iio_conv_spec spec = { .type = IIO_CONV_F32, .complex_iq = true,
+	.scale = IIO_CONV_SCALE_FULLSCALE };
 struct iio_conv_stream *rx;
 
-int ret = iio_conv_stream_open(iio_device_get_buffer(dev, 0), chans, 2, &params, &rx);
+/* frames of 16384 samples, 4 blocks in rotation */
+int ret = iio_conv_stream_open(iio_device_get_buffer(dev, 0), chans, 2,
+		16384, 4, false, &spec, &rx);
 
-ssize_t n = iio_conv_stream_read(rx, iq);   /* 16384, or 0 if no frame came in time */
+ret = iio_conv_stream_read(rx, iq);  /* 1: a frame, 0: none in time, < 0: errno */
 ...
-iio_conv_stream_close(rx);
+iio_conv_stream_close(&rx);
 ```
 
 - Only the channels given are enabled, and host column k is channel k as
-  passed (or the pair 2k, 2k+1 for complex), whatever their order in the device.
-- `iio_conv_stream_write()` on an output buffer hands the frame to the
-  hardware before it returns; with `cyclic` the first frame is repeated until
-  the stream is closed. Closing a stream that is not cyclic lets the frames
-  already written go out first.
-- `timeout_ms` belongs to the stream: 0 never waits, a positive value waits
-  that long whatever the context's timeout is, a negative value blocks inside
-  libiio. A read or write that runs out of time returns 0 and can be repeated.
-- `iio_conv_stream_flush()` drops frames that are already captured and waiting.
+  passed (or the pair 2k, 2k+1 with `complex_iq`), whatever their order in
+  the device. Sizes and positions follow the mask the buffer really has, so
+  hardware that enables more channels than asked for is handled.
+- A receive stream captures from the moment it is opened, into all its
+  blocks. `iio_conv_stream_read()` returns `IIO_CONV_STREAM_FRAME` (1) with a
+  whole frame or `IIO_CONV_STREAM_NO_FRAME` (0) with the array untouched;
+  "no data in time" is not an error and the call can be repeated.
+  `iio_conv_stream_flush()` drops the frames already captured, so that the
+  next read waits for new data.
+- `iio_conv_stream_set_timeout()` picks how long a call may wait for a block:
+
+  | value | wait |
+  |---|---|
+  | `IIO_CONV_STREAM_TIMEOUT_CONTEXT` (-1, default) | one blocking dequeue, bounded by the timeout of the context |
+  | `IIO_CONV_STREAM_TIMEOUT_NONBLOCK` (0) | never: one look |
+  | a time in ms | polls every millisecond until the time has passed |
+
+  The timeout of the context, which is shared by everything on that context,
+  is never changed.
+- Transmit (`iio_conv_stream_write()`) is not implemented yet.
 
 ## Host array
 
