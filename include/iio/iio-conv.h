@@ -60,6 +60,11 @@ struct iio_conv_spec {
 	bool complex_iq;
 	/** Integer narrowing saturates instead of wrapping */
 	bool saturate;
+	/** Take the storage word as it is: the channel's valid-bit count and
+	 * shift are ignored (as if bits == length and shift == 0). Byte order
+	 * and signedness still apply, and so does scaling, which then refers
+	 * to the whole word. */
+	bool raw;
 	/** Per channel extra gain, applied after the scale mode. NULL = 1.0 */
 	const double *user_gain;
 	/** Per channel extra offset, added after all gains. NULL = 0.0 */

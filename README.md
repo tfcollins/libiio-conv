@@ -82,6 +82,7 @@ libiio objects.
 |---|---|
 | `layout` | `COLUMNS`: one contiguous column per channel (MATLAB order). `INTERLEAVED`: sample by sample (C / NumPy order). |
 | `complex_iq` | channels 2k and 2k+1 become the real and imaginary part of column k |
+| `raw` | take the storage word as it is: the channel's valid-bit count and shift are ignored, only byte order and signedness apply |
 
 ## Scaling
 
