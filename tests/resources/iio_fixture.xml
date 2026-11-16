@@ -1,0 +1,254 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE context [
+<!ELEMENT context (device | context-attribute)*>
+<!ELEMENT context-attribute EMPTY>
+<!ELEMENT device (channel | buffer | attribute | debug-attribute | event-attribute | buffer-attribute)*>
+<!ELEMENT channel (scan-element?, attribute*, event-attribute*)>
+<!ELEMENT buffer (attribute*, channel*)>
+<!ELEMENT attribute EMPTY>
+<!ELEMENT scan-element EMPTY>
+<!ELEMENT debug-attribute EMPTY>
+<!ELEMENT event-attribute EMPTY>
+<!ELEMENT buffer-attribute EMPTY>
+<!ATTLIST context name CDATA #REQUIRED version-major CDATA #REQUIRED version-minor CDATA #REQUIRED version-patch CDATA #REQUIRED version-git CDATA #REQUIRED description CDATA #IMPLIED>
+<!ATTLIST context-attribute name CDATA #REQUIRED value CDATA #REQUIRED>
+<!ATTLIST device id CDATA #REQUIRED name CDATA #IMPLIED label CDATA #IMPLIED>
+<!ATTLIST channel id CDATA #REQUIRED type (input|output) #REQUIRED name CDATA #IMPLIED label CDATA #IMPLIED>
+<!ATTLIST buffer index CDATA #REQUIRED direction (in|out) #IMPLIED>
+<!ATTLIST scan-element index CDATA #REQUIRED format CDATA #REQUIRED scale CDATA #IMPLIED>
+<!ATTLIST attribute name CDATA #REQUIRED filename CDATA #IMPLIED value CDATA #IMPLIED>
+<!ATTLIST debug-attribute name CDATA #REQUIRED value CDATA #IMPLIED>
+<!ATTLIST event-attribute name CDATA #REQUIRED filename CDATA #IMPLIED value CDATA #IMPLIED>
+<!ATTLIST buffer-attribute name CDATA #REQUIRED value CDATA #IMPLIED>
+]>
+<!--
+  Hardware-free fixture for libiio v1 "emu:" and "xml:" backends.
+  Rules this file obeys (all verified by experiment, see emu-backend.md):
+   * valid against the DTD libiio itself emits (context.c), so libxml2 prints nothing;
+   * in every device the scan-element channels come first, in increasing index
+     order, then the channels without scan-element: "emu:" sorts channels that
+     way, "xml:" keeps file order, so only this order gives the same channel
+     numbering (and a correct iio_device_get_sample_size) on both backends;
+   * every channel attribute named "scale" or "offset" has a numeric value
+     ("emu:" reads them at context creation and fails otherwise);
+   * a device uses either <buffer> elements or legacy <buffer-attribute>, never both.
+  "emu:" data files live next to this file: <device name or id, ':' -> '_'>_buf<idx>.bin
+-->
+<context name="xml" version-major="1" version-minor="2" version-patch="3" version-git="v1.2.3-fixture" description="Emulated fixture &amp; test context">
+  <context-attribute name="hw_model" value="Emulated Test Board"/>
+  <context-attribute name="fixture" value="emu-backend-reference"/>
+  <context-attribute name="num" value="42"/>
+  <context-attribute name="escaped" value="a &amp; b &lt;c&gt;"/>
+
+  <!-- RX: 2 complex channels, signed 12 bits in 16 (not fully defined), one scaled channel.
+       Modern <buffer> form with direction. emu data file: emu-rx_buf0.bin -->
+  <device id="iio:device0" name="emu-rx" label="rx-frontend">
+    <channel id="voltage0_i" type="input">
+      <scan-element index="0" format="le:s12/16&gt;&gt;0"/>
+      <attribute name="sampling_frequency" filename="in_voltage_sampling_frequency" value="30720000"/>
+      <attribute name="sampling_frequency_available" filename="in_voltage_sampling_frequency_available" value="[1000000 1000 61440000]"/>
+    </channel>
+    <channel id="voltage0_q" type="input">
+      <scan-element index="1" format="le:s12/16&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage1_i" type="input">
+      <scan-element index="2" format="le:s12/16&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage1_q" type="input">
+      <scan-element index="3" format="le:s12/16&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage2" type="input" name="aux" label="aux-adc">
+      <scan-element index="4" format="le:s14/16&gt;&gt;2" scale="0.250000"/>
+      <attribute name="offset" filename="in_voltage2_aux_offset" value="-100"/>
+      <attribute name="raw" filename="in_voltage2_aux_raw" value="1234"/>
+      <attribute name="scale" filename="in_voltage2_aux_scale" value="0.25"/>
+    </channel>
+    <buffer index="0" direction="in">
+      <attribute name="data_available" value="0"/>
+      <attribute name="length_align_bytes" value="8"/>
+      <attribute name="watermark" value="1024"/>
+      <channel id="voltage0_i" type="input"/>
+      <channel id="voltage0_q" type="input"/>
+      <channel id="voltage1_i" type="input"/>
+      <channel id="voltage1_q" type="input"/>
+      <channel id="voltage2" type="input"/>
+    </buffer>
+  </device>
+
+  <!-- TX: 2 complex channels, 16 bits fully defined, plus a DDS tone channel.
+       Legacy form: no <buffer>, buffer 0 is created from the scan-elements and its
+       direction is inferred from the output scan-elements. emu data file: emu-tx_buf0.bin -->
+  <device id="iio:device1" name="emu-tx">
+    <channel id="voltage0_i" type="output">
+      <scan-element index="0" format="le:s16/16&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage0_q" type="output">
+      <scan-element index="1" format="le:s16/16&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage1_i" type="output">
+      <scan-element index="2" format="le:s16/16&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage1_q" type="output">
+      <scan-element index="3" format="le:s16/16&gt;&gt;0"/>
+    </channel>
+    <channel id="altvoltage0" type="output" name="TX1_I_F1">
+      <attribute name="frequency" filename="out_altvoltage0_TX1_I_F1_frequency" value="1000000"/>
+      <attribute name="phase" filename="out_altvoltage0_TX1_I_F1_phase" value="90000"/>
+      <attribute name="raw" filename="out_altvoltage0_TX1_I_F1_raw" value="1"/>
+      <attribute name="scale" filename="out_altvoltage0_TX1_I_F1_scale" value="0.500000"/>
+    </channel>
+    <buffer-attribute name="data_available" value="0"/>
+    <buffer-attribute name="watermark" value="2048"/>
+  </device>
+
+  <!-- PHY: no buffer. Attribute playground: typed values, *_available lists and
+       ranges, debug attributes, event attributes, same channel id in both directions. -->
+  <device id="iio:device2" name="emu-phy" label="phy">
+    <attribute name="calib_mode" value="auto"/>
+    <attribute name="calib_mode_available" value="auto manual tx_quad rf_dc_offs"/>
+    <attribute name="dbl" value="3.25 dB"/>
+    <attribute name="empty" value=""/>
+    <attribute name="ensm_mode" value="fdd"/>
+    <attribute name="ensm_mode_available" value="sleep wait alert fdd pinctrl"/>
+    <attribute name="flag" value="1"/>
+    <attribute name="frac" value="0.5"/>
+    <attribute name="frac_available" value="[0 0.25 1]"/>
+    <attribute name="gain" value="10"/>
+    <attribute name="gain_available" value="[0 2 70]"/>
+    <attribute name="hex" value="0x10"/>
+    <attribute name="novalue"/>
+    <attribute name="text" value="hello world"/>
+    <debug-attribute name="bist_prbs" value="0"/>
+    <debug-attribute name="direct_reg_access" value="0x0"/>
+    <debug-attribute name="loopback" value="0"/>
+    <debug-attribute name="loopback_available" value="0 1 2"/>
+    <event-attribute name="events_enabled" value="1"/>
+    <channel id="voltage0" type="input" name="RX1" label="rx1-port">
+      <attribute name="gain_control_mode" filename="in_voltage0_gain_control_mode" value="slow_attack"/>
+      <attribute name="gain_control_mode_available" filename="in_voltage_gain_control_mode_available" value="manual fast_attack slow_attack hybrid"/>
+      <attribute name="hardwaregain" filename="in_voltage0_hardwaregain" value="71.000000 dB"/>
+      <attribute name="rf_bandwidth" filename="in_voltage_rf_bandwidth" value="18000000"/>
+      <attribute name="rf_bandwidth_available" filename="in_voltage_rf_bandwidth_available" value="[200000 1 56000000]"/>
+      <event-attribute name="thresh_rising_en" filename="events/in_voltage0_thresh_rising_en" value="0"/>
+      <event-attribute name="thresh_rising_value" filename="events/in_voltage0_thresh_rising_value" value="1000"/>
+      <event-attribute name="thresh_rising_value_available" filename="events/in_voltage0_thresh_rising_value_available" value="[0 100 4000]"/>
+    </channel>
+    <channel id="voltage0" type="output" name="TX1">
+      <attribute name="hardwaregain" filename="out_voltage0_hardwaregain" value="-10.000000 dB"/>
+    </channel>
+    <channel id="altvoltage0" type="output" name="RX_LO">
+      <attribute name="frequency" filename="out_altvoltage0_RX_LO_frequency" value="2400000000"/>
+      <attribute name="powerdown" filename="out_altvoltage0_RX_LO_powerdown" value="0"/>
+    </channel>
+    <channel id="altvoltage1" type="output" name="TX_LO">
+      <attribute name="frequency" filename="out_altvoltage1_TX_LO_frequency" value="2450000000"/>
+      <attribute name="powerdown" filename="out_altvoltage1_TX_LO_powerdown" value="1"/>
+    </channel>
+    <channel id="temp0" type="input">
+      <attribute name="input" filename="in_temp0_input" value="35123"/>
+    </channel>
+    <channel id="accel_x" type="input">
+      <attribute name="raw" filename="in_accel_x_raw" value="-17"/>
+      <event-attribute name="mag_falling_en" filename="events/in_accel_x_mag_falling_en" value="1"/>
+    </channel>
+  </device>
+
+  <!-- Two buffers on one device. emu data files: emu-multi_buf0.bin (in), emu-multi_buf1.bin (out) -->
+  <device id="iio:device3" name="emu-multi">
+    <channel id="voltage0" type="input">
+      <scan-element index="0" format="le:s16/16&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage1" type="input">
+      <scan-element index="1" format="le:s16/16&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage0" type="output">
+      <scan-element index="2" format="le:s12/16&gt;&gt;4"/>
+    </channel>
+    <channel id="voltage1" type="output">
+      <scan-element index="3" format="le:s12/16&gt;&gt;4"/>
+    </channel>
+    <buffer index="0" direction="in">
+      <attribute name="watermark" value="16"/>
+      <channel id="voltage0" type="input"/>
+      <channel id="voltage1" type="input"/>
+    </buffer>
+    <buffer index="1" direction="out">
+      <attribute name="watermark" value="32"/>
+      <channel id="voltage0" type="output"/>
+      <channel id="voltage1" type="output"/>
+    </buffer>
+  </device>
+
+  <!-- No name, no label. Scan-element format zoo: shift, big-endian, repeat, float,
+       1-bit, 64-bit timestamp (forces alignment padding). emu data file: iio_device4_buf0.bin -->
+  <device id="iio:device4">
+    <channel id="voltage0" type="input">
+      <scan-element index="0" format="le:U8/8&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage1" type="input">
+      <scan-element index="1" format="be:u24/32&gt;&gt;8"/>
+    </channel>
+    <channel id="voltage2" type="input">
+      <scan-element index="2" format="le:s12/16&gt;&gt;4"/>
+    </channel>
+    <channel id="rot_quaternion" type="input">
+      <scan-element index="3" format="le:s16/16X4&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage3" type="input">
+      <scan-element index="4" format="le:f32/32&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage4" type="input">
+      <scan-element index="5" format="be:F64/64&gt;&gt;0"/>
+    </channel>
+    <channel id="voltage5" type="input">
+      <scan-element index="6" format="le:u1/8&gt;&gt;7"/>
+    </channel>
+    <channel id="timestamp" type="input">
+      <scan-element index="7" format="le:s64/64&gt;&gt;0"/>
+    </channel>
+  </device>
+
+  <!-- hwmon: any device whose id starts with 'h' is hwmon; channel types use the hwmon table -->
+  <device id="hwmon0" name="emu-hwmon">
+    <channel id="in1" type="input">
+      <attribute name="input" filename="in1_input" value="12000"/>
+      <attribute name="label" filename="in1_label" value="VCC12"/>
+    </channel>
+    <channel id="fan1" type="input">
+      <attribute name="input" filename="fan1_input" value="3200"/>
+    </channel>
+    <channel id="pwm1" type="output">
+      <attribute name="pwm" filename="pwm1" value="128"/>
+    </channel>
+    <channel id="temp1" type="input">
+      <attribute name="crit" filename="temp1_crit" value="100000"/>
+      <attribute name="input" filename="temp1_input" value="45500"/>
+    </channel>
+    <channel id="curr1" type="input">
+      <attribute name="input" filename="curr1_input" value="1500"/>
+    </channel>
+    <channel id="power1" type="input">
+      <attribute name="input" filename="power1_input" value="18000000"/>
+    </channel>
+    <channel id="energy1" type="input">
+      <attribute name="input" filename="energy1_input" value="123456789"/>
+    </channel>
+    <channel id="humidity1" type="input">
+      <attribute name="input" filename="humidity1_input" value="40000"/>
+    </channel>
+    <channel id="intrusion0" type="input">
+      <attribute name="alarm" filename="intrusion0_alarm" value="0"/>
+    </channel>
+  </device>
+
+  <!-- not a trigger: id does not start with "trigger" -->
+  <device id="iio_sysfs_trigger">
+    <attribute name="add_trigger" value="0"/>
+    <attribute name="remove_trigger" value="0"/>
+  </device>
+
+  <!-- a trigger: id starts with "trigger", has a name, has no channel -->
+  <device id="trigger0" name="emu-trigger">
+    <attribute name="sampling_frequency" value="100"/>
+  </device>
+</context>

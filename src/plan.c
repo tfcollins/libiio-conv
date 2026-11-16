@@ -75,6 +75,10 @@ static int plan_chan(struct chan_plan *p, const struct iio_conv_chan *ch,
 	case IIO_CONV_SCALE_NONE:
 		break;
 	case IIO_CONV_SCALE_IIO:
+		/* the channel's scale and offset describe its valid bits, not
+		 * the storage word */
+		if (spec->raw)
+			return -EINVAL;
 		gain = ch->with_scale ? ch->scale : 1.0;
 		offset = ch->offset;
 		break;
