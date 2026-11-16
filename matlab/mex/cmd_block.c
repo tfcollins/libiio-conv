@@ -211,6 +211,8 @@ static int block_disable_cpu_access(struct gw_call *c)
 		ret = gw_arg_bool(c, 1, &disable);
 	if (ret)
 		return ret;
+	if (!gw_handle_owned(b.id))
+		return gw_fail(c, -EPERM, "the block belongs to a stream");
 	ret = iio_block_disable_cpu_access(b.ptr, disable);
 	if (ret < 0)
 		return ret;
@@ -224,14 +226,17 @@ static int block_disable_cpu_access(struct gw_call *c)
 /* Bytes of one channel in the block: whole samples only. libiio's loops run while the sample
  * STARTS inside the block, so a block that ends in half a sample must not be offered in full.
  * 0 when the channel is not enabled: libiio's raw shortcut (taken when the channel is as large
- * as the whole sample) would copy the data of another channel. */
-static size_t channel_bytes(const struct blk *b, const struct iio_channel *ch)
+ * as the whole sample) would copy the data of another channel. *sample: bytes of one sample of
+ * the channel. */
+static size_t channel_bytes(const struct blk *b, const struct iio_channel *ch, size_t *sample)
 {
 	const struct iio_channels_mask *mask = mask_of(b);
 	const struct iio_data_format *fmt = iio_channel_get_data_format(ch);
 	size_t length = (size_t)fmt->length / 8 * fmt->repeat;
 	ssize_t step;
 
+	if (sample)
+		*sample = length;
 	if (!mask || !iio_channel_is_enabled(ch, mask))
 		return 0;
 	step = iio_device_get_sample_size(iio_channel_get_device(ch), mask);
@@ -260,7 +265,7 @@ static int channel_read(struct gw_call *c)
 		ret = data_access(c, &b);
 	if (ret)
 		return ret;
-	len = channel_bytes(&b, ch);
+	len = channel_bytes(&b, ch, NULL);
 	out = mxCreateUninitNumericMatrix(1, len, mxUINT8_CLASS, mxREAL);
 	if (!out)
 		return -ENOMEM;
@@ -270,12 +275,14 @@ static int channel_read(struct gw_call *c)
 	return 0;
 }
 
-/* n = channel_write(ch, blk, u8, raw): bytes consumed; 0 for a channel that is not enabled */
+/* n = channel_write(ch, blk, u8, raw): bytes consumed, always whole samples of the channel
+ * (libiio's raw shortcut would copy a trailing part of a sample as it comes); 0 for a channel
+ * that is not enabled */
 static int channel_write(struct gw_call *c)
 {
 	const struct iio_channel *ch;
 	const uint8_t *data;
-	size_t n, len;
+	size_t n, len, sample;
 	struct blk b;
 	bool raw;
 	int ret;
@@ -293,9 +300,9 @@ static int channel_write(struct gw_call *c)
 		ret = gw_ret_double(c, 0, 0);
 	if (ret)
 		return ret;
-	len = channel_bytes(&b, ch);
+	len = channel_bytes(&b, ch, &sample);
 	if (n < len)
-		len = n;
+		len = sample ? n - n % sample : 0;
 	if (len)
 		gw_set_double(c, 0, (double)iio_channel_write(ch, b.ptr, data, len, raw));
 	return 0;
@@ -544,7 +551,8 @@ static void xfer_end(struct xfer *x)
 	x->gain = x->offset = NULL;
 }
 
-/* The option `channels`: a uint64 vector of channel ids, columns in that order; not given or
+/* The option `channels`: a uint64 vector of channel ids, columns in that order, none twice (as
+ * on the fast path: on a write the later column would overwrite the earlier one); not given or
  * empty: every scan element enabled in the stream's mask, in device order. */
 static int xfer_channels(struct gw_call *c, const mxArray *opts, const struct iio_device *dev, struct xfer *x)
 {
@@ -573,6 +581,9 @@ static int xfer_channels(struct gw_call *c, const mxArray *opts, const struct ii
 				return gw_fail(c, -EBADF, "option channels: element %u is not a channel", i + 1);
 			if (iio_channel_get_device(ch) != dev)
 				return gw_fail(c, -EINVAL, "option channels: element %u is a channel of another device", i + 1);
+			for (unsigned int k = 0; k < i; k++)
+				if (x->chans[k] == ch)
+					return gw_fail(c, -EINVAL, "option channels: element %u is given twice", i + 1);
 			x->chans[i] = ch;
 		}
 		x->nb_chans = n;
@@ -713,12 +724,14 @@ out:
 /* n = block_write(blk, data, opts): rows written = min(rows of data, capacity). The class is
  * that of data. opts.complex (default: data is complex) says whether a column is an I/Q pair;
  * with real data such a column goes to the I channel and the Q channel is written as zero
- * (MATLAB hands a complex array whose imaginary part is all zero to a MEX file as a real one). */
+ * (MATLAB hands a complex array whose imaginary part is all zero to a MEX file as a real one).
+ * For that reason the pair list is checked in full, with the converter complex data would use,
+ * before anything is written: what is an error must not depend on the imaginary part. */
 static int block_write(struct gw_call *c)
 {
 	static const char *const fields[] = { "channels", "complex", "scale", "raw", "gain", "offset" };
 	const mxArray *data = c->prhs[1], *opts = c->prhs[2];
-	const struct iio_channel **iq;
+	const struct iio_channel **iq = NULL;
 	unsigned int nb_conv, pairs;
 	struct iio_conv *conv;
 	bool data_complex, want_complex, temp;
@@ -761,16 +774,30 @@ static int block_write(struct gw_call *c)
 	}
 
 	nb_conv = x.nb_chans;
-	pairs = 0;
-	if (want_complex && !data_complex) {
-		/* real columns on I/Q pairs: a converter for the I channels alone; the Q channels,
-		 * kept behind them in the list, are cleared below */
-		pairs = x.nb_chans / 2;
+	pairs = want_complex && !data_complex ? x.nb_chans / 2 : 0;
+	if (pairs) {
 		iq = mxMalloc(x.nb_chans * sizeof(*iq));
 		if (!iq) {
 			ret = -ENOMEM;
 			goto out;
 		}
+	}
+
+	/* result first: the last mx allocation, before anything is written to the block */
+	ret = gw_ret_double(c, 0, 0);
+	if (ret || !rows)
+		goto out;
+	if (pairs) {
+		/* real columns on I/Q pairs. First the converter complex data would get: it refuses
+		 * a list that is not made of pairs (a Q channel that is no scan element, is not in
+		 * the stream's mask or has another format than its I channel). Then a converter for
+		 * the I channels alone; the Q channels, kept behind them in the list, are cleared
+		 * below. */
+		ret = xfer_conv(c, &x, x.nb_chans, &conv, &temp);
+		if (ret)
+			goto out;
+		if (temp)
+			iio_conv_destroy(conv);
 		for (unsigned int k = 0; k < pairs; k++) {
 			iq[k] = x.chans[2 * k];
 			iq[pairs + k] = x.chans[2 * k + 1];
@@ -781,14 +808,10 @@ static int block_write(struct gw_call *c)
 		}
 		mxFree((void *)x.chans);
 		x.chans = iq;
+		iq = NULL;
 		x.spec.complex_iq = false;
 		nb_conv = pairs;
 	}
-
-	/* result first: the last mx allocation, before anything is written to the block */
-	ret = gw_ret_double(c, 0, 0);
-	if (ret || !rows)
-		goto out;
 	ret = xfer_conv(c, &x, nb_conv, &conv, &temp);
 	if (ret)
 		goto out;
@@ -809,6 +832,8 @@ static int block_write(struct gw_call *c)
 	}
 	gw_set_double(c, 0, (double)n);
 out:
+	if (iq)
+		mxFree((void *)iq);
 	xfer_end(&x);
 	return ret;
 }

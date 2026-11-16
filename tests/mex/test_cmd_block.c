@@ -206,7 +206,7 @@ static void test_receive(void)
 	static const uint8_t i_raw[16] = { 0x00, 0x08, 0x01, 0x18, 0x02, 0x28, 0x03, 0x38,
 		0x04, 0x48, 0x05, 0x58, 0x06, 0x68, 0x07, 0x78 };
 	static const double bad_samples[] = { 0, 2.5, NAN, INFINITY, 1e300, -1 };
-	uint64_t ctx, rx, tx, v0i, v0q, v2, tx_i, buf, mask, bs, blk, blk2, view = 0;
+	uint64_t ctx, rx, tx, v0i, v0q, v2, tx_i, buf, mask, bs, blk, blk2, blk30, view = 0;
 	struct iio_buffer_stream *bsp;
 	struct iio_block *raw;
 	const int16_t *p16;
@@ -473,6 +473,126 @@ static void test_receive(void)
 		mxDestroyArray(a);
 	}
 
+	/* the cache key, one item at a time: two reads in a row whose options differ in exactly one
+	 * item never share a converter (the first one is still cached when the second looks) */
+	{
+		struct iio_data_format *fmt = (struct iio_data_format *)(uintptr_t)
+			iio_channel_get_data_format(gw_handle_ptr(v0i, GW_T_CHANNEL));
+		const struct iio_data_format saved = *fmt;
+		static const double g2[3] = { 5, 7, 5 };
+
+		/* the channels and their order */
+		a = rd(blk, mkstruct(2, "channels", ids(2, v0i, v0q), "class", mt_str("int16")));
+		CHECK(shape(a, mxINT16_CLASS, 8, 2, false) && first_of(a) == -2048);
+		mxDestroyArray(a);
+		a = rd(blk, mkstruct(2, "channels", ids(2, v0q, v0i), "class", mt_str("int16")));
+		CHECK(shape(a, mxINT16_CLASS, 8, 2, false) && first_of(a) == 2047);
+		mxDestroyArray(a);
+		a = rd(blk, mkstruct(2, "channels", ids(1, v0i), "class", mt_str("int32")));
+		CHECK(first_of(a) == -2048);
+		mxDestroyArray(a);
+		a = rd(blk, mkstruct(2, "channels", ids(1, v0q), "class", mt_str("int32")));
+		CHECK(first_of(a) == 2047);
+		mxDestroyArray(a);
+
+		/* complex or not: I(0) Q(0) I(1) .. against I(0) I(1) .. Q(0) Q(1) .. */
+		for (int pass = 0; pass < 3; pass++) {
+			bool cplx = pass != 1;
+
+			a = rd(blk, mkstruct(2, "class", mt_str("int16"), "complex", mt_bool(cplx)));
+			CHECK(shape(a, mxINT16_CLASS, 8, cplx ? 1 : 2, cplx));
+			if (shape(a, mxINT16_CLASS, 8, cplx ? 1 : 2, cplx)) {
+				p16 = mxGetData(a);
+				CHECK(p16[0] == -2048 && p16[1] == (cplx ? 2047 : -2047) && p16[8] == (cplx ? -2044 : 2047));
+			}
+			mxDestroyArray(a);
+		}
+
+		/* the offset alone: none, 3, 5 */
+		a = rd(blk, mt_empty());
+		CHECK(first_of(a) == -2048);
+		mxDestroyArray(a);
+		a = rd(blk, mkstruct(1, "offset", mt_dbl(3)));
+		CHECK(first_of(a) == -2045);
+		mxDestroyArray(a);
+		a = rd(blk, mkstruct(1, "offset", mt_dbl(5)));
+		CHECK(first_of(a) == -2043);
+		mxDestroyArray(a);
+
+		/* gains per column that share the first value: [3 5], [3 7], [3 5] */
+		for (int pass = 0; pass < 3; pass++) {
+			mxArray *g = mxCreateDoubleMatrix(1, 2, mxREAL);
+
+			((double *)mxGetData(g))[0] = 3;
+			((double *)mxGetData(g))[1] = g2[pass];
+			a = rd(blk, mkstruct(1, "gain", g));
+			CHECK(shape(a, mxDOUBLE_CLASS, 8, 2, false));
+			if (shape(a, mxDOUBLE_CLASS, 8, 2, false)) {
+				pd = mxGetData(a);
+				CHECK(pd[0] == -6144 && pd[8] == 2047 * g2[pass]);
+			}
+			mxDestroyArray(a);
+		}
+
+		/* the scale of the data format (IIO scale) */
+		fmt->with_scale = true;
+		fmt->scale = 2;
+		a = rd(blk, mkstruct(2, "channels", ids(1, v0i), "scale", mt_str("iio")));
+		CHECK(first_of(a) == -4096);
+		mxDestroyArray(a);
+		fmt->scale = 3;
+		a = rd(blk, mkstruct(2, "channels", ids(1, v0i), "scale", mt_str("iio")));
+		CHECK(first_of(a) == -6144);
+		mxDestroyArray(a);
+		*fmt = saved;
+
+		/* its shift: 0x0800 >> 4 is 128 */
+		a = rd(blk, mkstruct(2, "channels", ids(1, v0i), "class", mt_str("int16")));
+		CHECK(first_of(a) == -2048);
+		mxDestroyArray(a);
+		fmt->shift = 4;
+		a = rd(blk, mkstruct(2, "channels", ids(1, v0i), "class", mt_str("int16")));
+		CHECK(first_of(a) == 128);
+		mxDestroyArray(a);
+		*fmt = saved;
+		a = rd(blk, mkstruct(2, "channels", ids(1, v0i), "class", mt_str("int16")));
+		CHECK(first_of(a) == -2048);
+		mxDestroyArray(a);
+	}
+
+	/* a channel twice is refused, as on the fast path */
+	CHECK(mt_raises("iio:EINVAL", "block_read", 2, mt_u64(blk),
+		mkstruct(2, "channels", ids(2, v0i, v0i), "class", mt_str("int16"))));
+	CHECK(strstr(mock_err_msg(), "twice") != NULL);
+	CHECK(mt_raises("iio:EINVAL", "block_read", 2, mt_u64(blk),
+		mkstruct(2, "channels", ids(3, v0q, v0i, v0q), "class", mt_str("int16"))));
+
+	/* a block that ends in half a sample: whole samples only, on every path */
+	blk30 = dp_block(bs, 30);
+	if (blk30) {
+		CHECK(mt_dbl_of("block_size", 1, mt_u64(blk30)) == 30);
+		CHECK(mt_dbl_of("block_set_bytes", 2, mt_u64(blk30), mt_bytes(ramp, 30)) == 30);
+		CHECK(chan_is(v0i, blk30, false, i_conv, 14));
+		CHECK(chan_is(v0i, blk30, true, i_raw, 14));
+		CHECK(chan_is(v0q, blk30, false, q_conv, 14));
+		a = rd(blk30, mkstruct(1, "class", mt_str("int16")));
+		CHECK(shape(a, mxINT16_CLASS, 7, 2, false));
+		if (shape(a, mxINT16_CLASS, 7, 2, false)) {
+			p16 = mxGetData(a);
+			CHECK(p16[6] == -2042 && p16[7] == 2047 && p16[13] == 2041);
+		}
+		mxDestroyArray(a);
+		a = rd(blk30, mkstruct(3, "class", mt_str("int16"), "complex", mt_bool(true), "samples", mt_dbl(8)));
+		CHECK(shape(a, mxINT16_CLASS, 7, 1, true));
+		mxDestroyArray(a);
+		CHECK(mt_dbl_of("block_write", 3, mt_u64(blk30),
+			i16(8, 2, false, 16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16), mt_empty()) == 7);
+		CHECK(bytes_are(blk30, 24, "\x07\x00\x0f\x00", 4) && bytes_are(blk30, 28, ramp + 28, 2));
+		CHECK(mt_dbl_of("channel_write", 4, mt_u64(v0i), mt_u64(blk30), mt_bytes(ramp, 16), mt_bool(false)) == 14);
+		CHECK(bytes_are(blk30, 28, ramp + 28, 2));
+		mt_ok("block_destroy", 1, mt_u64(blk30));
+	}
+
 	/* CPU access switched off (no test backend can do it: the flag as the command leaves it) */
 	gw_handle_set_flags(blk, BLK_CPU_OFF);
 	CHECK(mt_raises("iio:EPERM", "block_get_bytes", 1, mt_u64(blk)));
@@ -487,6 +607,10 @@ static void test_receive(void)
 		CHECK(gw_handle_borrow(GW_T_BLOCK, raw, bs, &view) == 0 && view != 0);
 		CHECK(mt_dbl_of("block_size", 1, mt_u64(view)) == 32);
 		CHECK(mt_raises("iio:EPERM", "block_enqueue", 3, mt_u64(view), mt_dbl(0), mt_bool(false)));
+		CHECK(gw_handle_flags(view) == 0);
+		/* a change through a borrowed object: refused before libiio (which would say ENOSYS here) */
+		CHECK(mt_raises("iio:EPERM", "block_disable_cpu_access", 2, mt_u64(view), mt_bool(true)));
+		CHECK(mt_raises("iio:EPERM", "block_disable_cpu_access", 2, mt_u64(view), mt_bool(false)));
 		CHECK(gw_handle_flags(view) == 0);
 		gw_handle_set_flags(view, BLK_ENQUEUED);
 		CHECK(mt_raises("iio:EPERM", "block_dequeue", 2, mt_u64(view), mt_bool(false)));
@@ -607,6 +731,126 @@ static void test_second_context(void)
 
 /* ------------------------------------------------------------------ transmit, emu */
 
+/* block_write of one sample to the I/Q pair list `chans` (option complex = true) raises `id`;
+ * the sample is 9 + 0i, handed over complex or, as MATLAB does for such a value, real. */
+static bool pair_raises(const char *id, uint64_t blk, bool data_complex, mxArray *chans)
+{
+	mxArray *d = data_complex ? i16(1, 1, true, 2, 9, 0) : i16(1, 1, false, 1, 9);
+
+	return mt_raises(id, "block_write", 3, mt_u64(blk), d,
+		mkstruct(2, "channels", chans, "complex", mt_bool(true)));
+}
+
+/* m-by-n real double from m * n values in storage order */
+static mxArray *dbl(size_t m, size_t n, ...)
+{
+	mxArray *a = mxCreateDoubleMatrix(m, n, mxREAL);
+	double *p = mxGetData(a);
+	va_list ap;
+
+	va_start(ap, n);
+	for (size_t i = 0; i < m * n; i++)
+		p[i] = va_arg(ap, double);
+	va_end(ap);
+	return a;
+}
+
+/* Gain and offset on transmit: device = (host - offset) / gain, the exact inverse of a read
+ * (host = device * gain + offset), per column, and for both channels of an I/Q pair. */
+static void test_transmit_pairs(void)
+{
+	static const int16_t real_words[12] = { 45, 0, 30, 0, 95, 0, 55, 0, 145, 0, 80, 0 };
+	static const int16_t cplx_words[4] = { 45, 20, 25, 10 };
+	static const int16_t one_gain[4] = { 50, 0, 60, 0 };
+	uint8_t fill[24];
+	uint64_t ctx, tx, buf, mask, bs, blk;
+	mxArray *d, *a;
+
+	memset(fill, 0x11, sizeof(fill));
+	ctx = mt_open_context(fx->uri);
+	CHECK(ctx != 0);
+	tx = dp_dev(ctx, "emu-tx");
+	buf = dp_buf(tx, 0);
+	mask = dp_mask(tx, true, 4, "voltage0_i", "voltage0_q", "voltage1_i", "voltage1_q");
+	bs = dp_bufstream(buf, mask);
+	blk = dp_block(bs, 24);
+	if (!blk) {
+		gw_handle_destroy(ctx);
+		return;
+	}
+
+	/* real columns on two pairs: column k goes to the I channel of pair k with ITS gain and
+	 * offset, every Q channel is zero */
+	CHECK(mt_dbl_of("block_set_bytes", 2, mt_u64(blk), mt_bytes(fill, 24)) == 24);
+	CHECK(mt_dbl_of("block_write", 3, mt_u64(blk), dbl(3, 2, 100.0, 200.0, 300.0, 100.0, 200.0, 300.0),
+		mkstruct(3, "complex", mt_bool(true), "gain", dbl(1, 2, 2.0, 4.0), "offset", dbl(1, 2, 10.0, -20.0))) == 3);
+	CHECK(bytes_are(blk, 0, real_words, 24));
+	/* a scalar gain and no offset */
+	CHECK(mt_dbl_of("block_set_bytes", 2, mt_u64(blk), mt_bytes(fill, 24)) == 24);
+	CHECK(mt_dbl_of("block_write", 3, mt_u64(blk), dbl(1, 2, 100.0, 120.0),
+		mkstruct(2, "complex", mt_bool(true), "gain", mt_dbl(2))) == 1);
+	CHECK(bytes_are(blk, 0, one_gain, 8) && bytes_are(blk, 8, fill, 16));
+
+	/* complex columns: the offset is taken from I and from Q alike */
+	d = mxCreateDoubleMatrix(1, 2, mxCOMPLEX);
+	((double *)mxGetData(d))[0] = 100;
+	((double *)mxGetData(d))[1] = 50;
+	((double *)mxGetData(d))[2] = 120;
+	((double *)mxGetData(d))[3] = 60;
+	CHECK(mt_dbl_of("block_write", 3, mt_u64(blk), d,
+		mkstruct(2, "gain", dbl(1, 2, 2.0, 4.0), "offset", dbl(1, 2, 10.0, 20.0))) == 1);
+	CHECK(bytes_are(blk, 0, cplx_words, 8) && bytes_are(blk, 8, fill, 16));
+	/* and a read with the same gain and offset gives the data back */
+	a = rd(blk, mkstruct(4, "complex", mt_bool(true), "samples", mt_dbl(1),
+		"gain", dbl(1, 2, 2.0, 4.0), "offset", dbl(1, 2, 10.0, 20.0)));
+	CHECK(shape(a, mxDOUBLE_CLASS, 1, 2, true));
+	if (shape(a, mxDOUBLE_CLASS, 1, 2, true)) {
+		const double *p = mxGetData(a);
+
+		CHECK(p[0] == 100 && p[1] == 50 && p[2] == 120 && p[3] == 60);
+	}
+	mxDestroyArray(a);
+
+	/* a wrong gain count is an error for real data on pairs as for complex data */
+	CHECK(mt_raises("iio:EINVAL", "block_write", 3, mt_u64(blk), dbl(1, 2, 1.0, 2.0),
+		mkstruct(2, "complex", mt_bool(true), "gain", dbl(1, 4, 1.0, 1.0, 1.0, 1.0))));
+	CHECK(bytes_are(blk, 0, cplx_words, 8));
+	gw_handle_destroy(ctx);
+}
+
+/* One enabled channel that fills the whole sample: libiio copies raw bytes as they come
+ * (its raw shortcut), so the gateway offers whole samples only. */
+static void test_raw_whole_samples(void)
+{
+	static const uint8_t in[5] = { 1, 2, 3, 4, 5 };
+	uint8_t fill[8];
+	uint64_t ctx, tx, v0i, buf, mask, bs, blk;
+
+	memset(fill, 0x11, sizeof(fill));
+	ctx = mt_open_context(fx->uri);
+	CHECK(ctx != 0);
+	tx = dp_dev(ctx, "emu-tx");
+	v0i = dp_chn(tx, "voltage0_i", true);
+	buf = dp_buf(tx, 0);
+	mask = dp_mask(tx, true, 1, "voltage0_i");
+	bs = dp_bufstream(buf, mask);
+	blk = dp_block(bs, 8);
+	if (!blk || !v0i) {
+		gw_handle_destroy(ctx);
+		return;
+	}
+	for (int raw = 0; raw < 2; raw++) {
+		CHECK(mt_dbl_of("block_set_bytes", 2, mt_u64(blk), mt_bytes(fill, 8)) == 8);
+		CHECK(mt_dbl_of("channel_write", 4, mt_u64(v0i), mt_u64(blk), mt_bytes(in, 1), mt_bool(raw)) == 0);
+		CHECK(bytes_are(blk, 0, fill, 8));
+		CHECK(mt_dbl_of("channel_write", 4, mt_u64(v0i), mt_u64(blk), mt_bytes(in, 3), mt_bool(raw)) == 2);
+		CHECK(bytes_are(blk, 0, in, 2) && bytes_are(blk, 2, fill, 6));
+		CHECK(mt_dbl_of("channel_write", 4, mt_u64(v0i), mt_u64(blk), mt_bytes(in, 5), mt_bool(raw)) == 4);
+		CHECK(bytes_are(blk, 0, in, 4) && bytes_are(blk, 4, fill, 4));
+	}
+	gw_handle_destroy(ctx);
+}
+
 static void test_transmit(void)
 {
 	static const int16_t first[8] = { 100, 1, -200, 2, 300, 3, -400, 4 };
@@ -614,7 +858,9 @@ static void test_transmit(void)
 	static const int16_t chan_i[4] = { 7, 8, 9, 10 };
 	static const int16_t rounded[8] = { 32767, 0, -32768, 0, 2, 0, 2, 0 };
 	static const uint8_t four[4] = { 1, 2, 3, 4 };
-	uint64_t ctx, tx, rx, v0i, v0q, rx_i, buf, mask, bs, blk;
+	static const uint8_t fill[16] = { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+		0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11 };
+	uint64_t ctx, tx, rx, v0i, v0q, v1q, alt, rx_i, buf, mask, bs, blk, blk14;
 	struct iio_buffer_stream *bsp;
 	int16_t got[8];
 	mxArray *out[1], *d;
@@ -626,13 +872,15 @@ static void test_transmit(void)
 	rx = dp_dev(ctx, "emu-rx");
 	v0i = dp_chn(tx, "voltage0_i", true);
 	v0q = dp_chn(tx, "voltage0_q", true);
+	v1q = dp_chn(tx, "voltage1_q", true);
+	alt = dp_chn(tx, "altvoltage0", true);
 	rx_i = dp_chn(rx, "voltage0_i", false);
 	buf = dp_buf(tx, 0);
 	mask = dp_mask(tx, true, 2, "voltage0_i", "voltage0_q");
 	bs = dp_bufstream(buf, mask);
 	blk = dp_block(bs, 16);
 	bsp = gw_handle_ptr(bs, GW_T_BUFFER_STREAM);
-	if (!blk || !bsp || !v0i || !v0q) {
+	if (!blk || !bsp || !v0i || !v0q || !v1q || !alt) {
 		gw_handle_destroy(ctx);
 		return;
 	}
@@ -760,6 +1008,49 @@ static void test_transmit(void)
 	CHECK(mt_dbl_of("block_write", 3, mt_u64(blk), d, mkstruct(1, "channels", ids(1, v0i))) == 4);
 	CHECK(bytes_are(blk, 0, rounded, 16));
 
+	/* complex data with complex = false is refused as such, also when the column count fits */
+	CHECK(mt_raises("iio:EINVAL", "block_write", 3, mt_u64(blk), i16(1, 2, true, 4, 1, 2, 3, 4),
+		mkstruct(1, "complex", mt_bool(false))));
+	CHECK(strstr(mock_err_msg(), "complex data") != NULL);
+	/* the column count is checked for an array without rows too */
+	CHECK(mt_raises("iio:EINVAL", "block_write", 3, mt_u64(blk),
+		mxCreateNumericMatrix(0, 0, mxINT16_CLASS, mxREAL), mt_empty()));
+	CHECK(mt_raises("iio:EINVAL", "block_write", 3, mt_u64(blk),
+		mxCreateNumericMatrix(0, 2, mxINT16_CLASS, mxREAL), mkstruct(1, "complex", mt_bool(true))));
+	CHECK(bytes_are(blk, 0, rounded, 16));
+
+	/* I/Q pairs: the channel list is checked in full, whether the data arrives complex or real
+	 * (MATLAB hands a complex array with an all-zero imaginary part over as a real one) */
+	for (int cplx = 0; cplx < 2; cplx++) {
+		CHECK(pair_raises("iio:EINVAL", blk, cplx, ids(2, v0i, v0i)));           /* Q is I */
+		CHECK(strstr(mock_err_msg(), "twice") != NULL);
+		CHECK(pair_raises("iio:EINVAL", blk, cplx, ids(2, v0i, alt)));           /* no scan element */
+		CHECK(pair_raises("iio:EINVAL", blk, cplx, ids(2, v0i, v1q)));           /* not in the stream's mask */
+		CHECK(pair_raises("iio:EINVAL", blk, cplx, ids(2, v1q, v0q)));
+		CHECK(bytes_are(blk, 0, rounded, 16));
+	}
+	CHECK(mt_raises("iio:EINVAL", "block_write", 3, mt_u64(blk), i16(4, 2, false, 0),
+		mkstruct(1, "channels", ids(2, v0q, v0q))));
+	CHECK(bytes_are(blk, 0, rounded, 16));
+
+	/* a block that ends in half a sample takes whole samples only */
+	blk14 = dp_block(bs, 14);
+	if (blk14) {
+		static const int16_t three[6] = { 100, 1, -200, 2, 300, 3 };
+
+		CHECK(mt_dbl_of("block_set_bytes", 2, mt_u64(blk14), mt_bytes(fill, 14)) == 14);
+		CHECK(mt_dbl_of("block_write", 3, mt_u64(blk14),
+			i16(4, 1, true, 8, 100, 1, -200, 2, 300, 3, -400, 4), mt_empty()) == 3);
+		CHECK(bytes_are(blk14, 0, three, 12) && bytes_are(blk14, 12, fill, 2));
+		CHECK(mt_dbl_of("block_write", 3, mt_u64(blk14), i16(4, 1, false, 4, 7, -8, 9, -10),
+			mkstruct(1, "complex", mt_bool(true))) == 3);
+		CHECK(bytes_are(blk14, 0, real_iq, 12) && bytes_are(blk14, 12, fill, 2));
+		CHECK(mt_dbl_of("channel_write", 4, mt_u64(v0i), mt_u64(blk14), mt_bytes(chan_i, 8), mt_bool(false)) == 6);
+		CHECK(mt_dbl_of("channel_write", 4, mt_u64(v0q), mt_u64(blk14), mt_bytes(chan_i, 8), mt_bool(true)) == 6);
+		CHECK(bytes_are(blk14, 12, fill, 2));
+		mt_ok("block_destroy", 1, mt_u64(blk14));
+	}
+
 	/* option errors */
 	CHECK(mt_raises("iio:EINVAL", "block_write", 3, mt_u64(blk), i16(4, 2, false, 0),
 		mkstruct(1, "scale", mt_str("fullscale"))));
@@ -867,6 +1158,25 @@ static void test_fake(void)
 		CHECK(!strcmp(fake.log, "e"));
 	}
 
+	/* a pair whose second channel holds four values per sample cannot be an I/Q pair: the same
+	 * answer for complex and for real data, and nothing is written */
+	{
+		uint64_t zoo = dp_dev(ctx, "iio:device4");
+		uint64_t zv2 = dp_chn(zoo, "voltage2", false), quat = dp_chn(zoo, "rot_quaternion", false);
+		uint64_t zmask = dp_mask(zoo, false, 2, "voltage2", "rot_quaternion");
+		uint64_t zbs = dp_bufstream(dp_buf(zoo, 0), zmask);
+		uint64_t zblk = dp_block(zbs, 20);
+		uint8_t fill[20];
+
+		memset(fill, 0x11, sizeof(fill));
+		if (zblk && zv2 && quat) {
+			CHECK(mt_dbl_of("block_set_bytes", 2, mt_u64(zblk), mt_bytes(fill, 20)) == 20);
+			CHECK(pair_raises("iio:ENOTSUP", zblk, true, ids(2, zv2, quat)));
+			CHECK(pair_raises("iio:ENOTSUP", zblk, false, ids(2, zv2, quat)));
+			CHECK(bytes_are(zblk, 0, fill, 20));
+		}
+	}
+
 	/* an enqueued block and a started stream go with the context */
 	gw_handle_destroy(ctx);
 	CHECK(gw_handle_type(blk) == GW_T_NONE);
@@ -893,6 +1203,8 @@ int main(int argc, char **argv)
 	test_receive();
 	test_second_context();
 	test_transmit();
+	test_transmit_pairs();
+	test_raw_whole_samples();
 	test_fake();
 	CHECK(now_ms() - t0 < 5000);
 
