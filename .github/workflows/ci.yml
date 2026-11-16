@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  c-library:
+    name: C library (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build libxml2-dev libzstd-dev bison flex
+
+      - name: Cache pinned libiio v1
+        uses: actions/cache@v4
+        with:
+          path: deps/install
+          key: libiio-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deps/build-libiio.sh') }}
+
+      - name: Build pinned libiio v1
+        run: deps/build-libiio.sh
+
+      - name: Show CPU
+        run: lscpu | grep -i -E 'model name|^flags|^features' | cut -c1-600
+
+      - name: Build and test
+        run: |
+          cmake -S . -B build -G Ninja
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+
+      - name: Build and test with sanitizers
+        run: |
+          cmake -S . -B build-asan -G Ninja -DIIO_CONV_SANITIZE=ON
+          cmake --build build-asan
+          ctest --test-dir build-asan --output-on-failure
+
+      - name: Test with each backend forced
+        run: |
+          for be in scalar sse41 avx2 avx512 neon; do
+            echo "::group::IIO_CONV_FORCE=$be"
+            IIO_CONV_FORCE=$be ctest --test-dir build --output-on-failure
+            echo "::endgroup::"
+          done
+
+      - name: Release build, tests and a short benchmark
+        run: |
+          cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DIIO_CONV_BUILD_BENCH=ON
+          cmake --build build-rel
+          ctest --test-dir build-rel --output-on-failure
+          build-rel/bench/bench_conv -n 12 tests/resources/conv_test.xml

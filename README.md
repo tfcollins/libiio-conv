@@ -1,5 +1,7 @@
 # libiio-conv
 
+[![CI](https://github.com/tfcollins/libiio-conv/actions/workflows/ci.yml/badge.svg)](https://github.com/tfcollins/libiio-conv/actions/workflows/ci.yml)
+
 Fast conversion between IIO buffer samples and host arrays (type change, I/Q
 pairing, layout, scaling) for libiio v1, with SIMD kernels chosen at run time.
 
@@ -121,3 +123,8 @@ Integer conversions wrap unless `saturate` is set.
 
 Without the XML file, or in a build without libiio (such as the static ARM
 build), the backends are compared with the scalar backend only.
+
+## Licence
+
+MIT, see `LICENSE`. libiio itself is a separate project with its own licence
+terms.

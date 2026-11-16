@@ -5,14 +5,14 @@
 Getting samples between an IIO buffer and user code is slow today, worst of all in MATLAB:
 
 - libiio converts **one sample at a time** in scalar byte-wise C: `iio_channel_convert` /
-  `iio_channel_read` (`~/dev/libiio/channel.c:630-760`) — memcpy, byte-loop shift, sign-extend,
+  `iio_channel_read` (`channel.c` in libiio) — memcpy, byte-loop shift, sign-extend,
   per sample, through a function pointer. It never produces floats, complex, or scaled values.
 - The MATLAB toolboxes finish the job in M-code: `TransceiverToolbox/+adi/+common/Rx.m:80-86`
   builds complex doubles column by column, `Rx.m:105-107` does a `calllib` **per sample**, and
   `Tx.m:47-50` interleaves I/Q with strided assignments. They sit on MathWorks'
   `matlabshared.libiio` (libiio v0), which already copies each buffer into a MATLAB array.
 
-Goal: a new project in `~/dev/libiio-conv` (empty, not yet a git repo) with two parts:
+Goal: a new project with two parts:
 
 1. **libiio-conv** — a C library layered on libiio v1 that converts whole blocks at once with
    SIMD, including de/interleaving, complex output, type change and scaling.
@@ -86,7 +86,7 @@ per ISA in separate translation units compiled with the matching flags:
   full public `iio.h` surface (133 functions): `Context`, `Scan`, `Device`, `Channel`, `Attr`,
   `ChannelsMask`, `Buffer`, `BufferStream`, `Block`, `Stream`, `EventStream`/`Event`, plus
   trigger, hwmon, debug-attr, register read/write, library/backend queries. Naming follows the
-  Python/C# bindings in `~/dev/libiio/bindings/` for consistency and later upstreaming to
+  Python/C# bindings in libiio's `bindings/` for consistency and later upstreaming to
   `libiio/bindings/matlab`.
 - **Zero-copy data path**: `Buffer.read(...)` / `Stream.read(...)` take `'OutputDataType'`
   (`double|single|int16|...`), `'Complex'`, `'Scale'` (`none|iio|fullscale` + optional gain).
@@ -97,8 +97,7 @@ per ISA in separate translation units compiled with the matching flags:
   buffer keyed on the option set.
 - **Code generation**: a `coder.ExternalDependency` class so `coder.ceval` calls `iio_conv_*`
   and libiio directly in generated code (the toolboxes need codegen); same semantics as MEX.
-- Build with CMake `find_package(Matlab)` / `matlab_add_mex`; local MATLAB R2025b and R2023b
-  at `/usr/local/MATLAB`.
+- Build with CMake `find_package(Matlab)` / `matlab_add_mex`.
 
 ### Repo layout
 
@@ -151,7 +150,7 @@ workflow once this is approved.
   reference; timing comparison against the existing `adi.common.Rx` M-code path; leak check by
   create/destroy loops; `codegen` smoke test of a small Rx function.
 - **Hardware**: one Rx capture and one Tx→Rx loopback on a lab board (Pluto or an FMCOMMS /
-  ADRV9009 rig — pick from `~/dev/infra/HOSTS.md`, reserve via labgrid) comparing MATLAB output
+  ADRV9009 rig) comparing MATLAB output
   against pyadi-iio for the same capture.
 
 ## Out of scope
@@ -181,3 +180,13 @@ workflow once this is approved.
   and its tests run on an ARM board.
 - Two implementation plans: the C library first (`docs/superpowers/plans/`), the MATLAB
   bindings second, written once the C API has settled.
+
+## Changes after the C library landed (2026-11-15)
+
+- The code is public at `github.com/tfcollins/libiio-conv` under the MIT licence, the same
+  licence as libiio v1's own sources.
+- MATLAB is tested in GitHub Actions on hosted runners (`matlab-actions/setup-matlab`), which
+  provide MATLAB to public repositories without a licence. No local MATLAB is assumed.
+  The C library is tested there too, on x86-64 and on AArch64 runners (NEON).
+- NEON has been verified on a Cortex-A72; see `docs/benchmarks.md`.
+- `iio_conv_read` takes the host array's row count, not a byte count (review fix).
