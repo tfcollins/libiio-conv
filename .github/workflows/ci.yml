@@ -154,15 +154,6 @@ jobs:
           strict: true
           startup-options: -logfile test-results/matlab.log
 
-      # A green test step says only that no test failed. This also fails the job when tests
-      # did not run (fewer than the minimum), were skipped, or took 4 s or more (tTiming is
-      # exempt). The minimum is the number of test methods rounded down to a multiple of 10
-      # (237 after wave 2b: 211 in the last green run and the 26 that wave added); raise it
-      # when the suite grows.
-      - name: Check the MATLAB test results (count, skipped, duration)
-        if: always()
-        run: python3 matlab/tools/check_junit.py test-results/matlab.xml --min-tests 230 --max-seconds 4 --max-skipped 0
-
       - name: Process exit with libiio loaded (run 1 of 10)
         uses: matlab-actions/run-command@v2
         with:
@@ -217,6 +208,17 @@ jobs:
         run: |
           if ls ~/matlab_crash_dump.* >/dev/null 2>&1; then echo "exit check: crash dump found"; exit 1; fi
 
+      # A green test step says only that no test failed. This also fails the job when tests
+      # did not run (fewer than the minimum), were skipped, or took 4.9 s or more (tTiming is
+      # exempt): the stall of the emu backend that this looks for is 5 s, and a test that
+      # pays for a cold start of MATLAB on a shared runner must not reach the limit. The
+      # step comes after the exit checks, so that a slow test does not skip them. The minimum
+      # is the number of test methods rounded down to a multiple of 10 (238 after wave 2b:
+      # 211 in the last green run and the 27 that wave added); raise it when the suite grows.
+      - name: Check the MATLAB test results (count, skipped, duration)
+        if: always()
+        run: python3 matlab/tools/check_junit.py test-results/matlab.xml --min-tests 230 --max-seconds 4.9 --max-skipped 0
+
       - name: Collect crash dumps
         if: always()
         run: mkdir -p test-results && cp ~/matlab_crash_dump.* test-results/ 2>/dev/null || true
@@ -228,7 +230,8 @@ jobs:
           name: matlab-${{ matrix.release }}
           path: test-results/
 
-      # Written by tTiming; absent when that test did not run.
+      # Written by tTiming; absent when that test did not run. The CPU is that of this job's
+      # runner (the job c-library runs on another machine).
       - name: Timing summary
         if: always()
         run: |
@@ -239,5 +242,7 @@ jobs:
               echo '```'
               cat test-results/timing.txt
               echo '```'
+              echo
+              echo "Runner CPU: $(lscpu | grep -i -m1 'model name' | sed 's/^[^:]*: *//')"
             } >> "$GITHUB_STEP_SUMMARY"
           fi
