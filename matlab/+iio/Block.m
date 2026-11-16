@@ -132,15 +132,18 @@ classdef Block < iio.internal.Object
             %                       Complex the Offset is added to the real and to the
             %                       imaginary part alike.
             %       Samples         at most this many rows (default: all the block holds)
+            %   A name that is not one of these, or a value that is not one of those listed
+            %   for OutputDataType and Scale, is an argument error, as for iio.RxStream;
+            %   Gain and Offset of another numeric class are taken as double.
             arguments
                 obj (1,1) {mustBeA(obj, "iio.Block")}
                 opts.Channels (1,:) {mustBeA(opts.Channels, "iio.Channel")} = iio.Channel.empty(1, 0)
-                opts.OutputDataType (1,1) string = "double"
+                opts.OutputDataType (1,1) string {mustBeMember(opts.OutputDataType, ["double","single","int8","uint8","int16","uint16","int32","uint32","int64","uint64"])} = "double"
                 opts.Complex (1,1) logical = false
-                opts.Scale (1,1) string = "none"
+                opts.Scale (1,1) string {mustBeMember(opts.Scale, ["none","iio","fullscale"])} = "none"
                 opts.Raw (1,1) logical = false
-                opts.Gain = double.empty(1, 0)
-                opts.Offset = double.empty(1, 0)
+                opts.Gain double = double.empty(1, 0)
+                opts.Offset double = double.empty(1, 0)
                 opts.Samples = double.empty(1, 0)
             end
             s = struct('channels', iio.internal.Object.handles(opts.Channels), ...
@@ -175,10 +178,10 @@ classdef Block < iio.internal.Object
                 data
                 opts.Channels (1,:) {mustBeA(opts.Channels, "iio.Channel")} = iio.Channel.empty(1, 0)
                 opts.Complex (1,1) logical
-                opts.Scale (1,1) string = "none"
+                opts.Scale (1,1) string {mustBeMember(opts.Scale, ["none","iio","fullscale"])} = "none"
                 opts.Raw (1,1) logical = false
-                opts.Gain = double.empty(1, 0)
-                opts.Offset = double.empty(1, 0)
+                opts.Gain double = double.empty(1, 0)
+                opts.Offset double = double.empty(1, 0)
             end
             if isfield(opts, 'Complex')
                 iq = opts.Complex;

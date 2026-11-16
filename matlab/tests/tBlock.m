@@ -145,8 +145,22 @@ classdef tBlock < IioTestCase
         function scaleNeedsFloat(tc)
             [blk, ~, ~, v0q] = rxBlock(tc);
             tc.verifyError(@() blk.read(OutputDataType = "int16", Scale = "fullscale"), 'iio:EINVAL');
-            tc.verifyError(@() blk.read(OutputDataType = "int12"), 'iio:EINVAL');
             tc.verifyError(@() blk.read(Complex = true, Channels = v0q), 'iio:EINVAL');     % half a pair
+        end
+
+        function optionValuesAsOnTheFastPath(tc)
+            % the same mistake has the same answer as on iio.RxStream and iio.TxStream:
+            % a class or a scale that does not exist is an argument error, and a gain
+            % or offset of another numeric class is taken as double
+            bs = openTx(tc);
+            blk = bs.create_block(2 * bs.sample_size);
+            tc.verifyValidationError(@() blk.read(OutputDataType = "int12"));
+            tc.verifyValidationError(@() blk.read(Scale = "bogus"));
+            tc.verifyValidationError(@() blk.write(int16([1 2; 3 4]), Scale = "bogus"));
+            tc.verifyEqual(blk.write([100 100; 200 200], Gain = single(2), Offset = int8(10)), 2);
+            tc.verifyEqual(blk.read(OutputDataType = "int16"), int16([45 45; 95 95]));
+            tc.verifyEqual(blk.read(Gain = single(2), Offset = int8(10)), [100 100; 200 200]);
+            tc.verifyEqual(blk.read(Gain = single([2 2]), Offset = uint8([10 10])), [100 100; 200 200]);
         end
 
         function channelRead(tc)
