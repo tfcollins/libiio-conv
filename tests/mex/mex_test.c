@@ -348,6 +348,27 @@ int mt_oom_sweep(int nlhs, const char *cmd, int nargs, ...)
 	return failed;
 }
 
+/* ------------------------------------------------------------------ registry */
+
+void mt_check_arities(const struct gw_group *g, const struct mt_arity *want, size_t n)
+{
+	if (g->nb_cmds != n)
+		harness_fail(g->name, "%zu registered commands, the reference has %zu", g->nb_cmds, n);
+	for (size_t i = 0; i < n && i < g->nb_cmds; i++) {
+		const struct gw_cmd *cmd = &g->cmds[i];
+
+		if (strcmp(cmd->name, want[i].name)) {
+			harness_fail(g->name, "command %zu is %s, the reference has %s", i, cmd->name, want[i].name);
+			continue;
+		}
+		if (cmd->min_rhs != want[i].min_rhs || cmd->max_rhs != want[i].max_rhs ||
+		    cmd->max_lhs != want[i].max_lhs)
+			harness_fail(cmd->name, "registered with %d, %d, %d; the reference has %d, %d, %d",
+				cmd->min_rhs, cmd->max_rhs, cmd->max_lhs,
+				want[i].min_rhs, want[i].max_rhs, want[i].max_lhs);
+	}
+}
+
 /* ------------------------------------------------------------------ objects */
 
 static void context_destroy(void *ptr, void *aux)

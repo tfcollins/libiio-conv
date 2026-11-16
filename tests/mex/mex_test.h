@@ -53,6 +53,18 @@ bool mt_raises(const char *id, const char *cmd, int nargs, ...);  /* true iff ra
  * are released. */
 int mt_oom_sweep(int nlhs, const char *cmd, int nargs, ...);
 
+/* One row of a group's "Command reference" table, written into the test from the reference. */
+struct mt_arity {
+	const char *name;
+	int min_rhs, max_rhs;   /* column "Args" */
+	int max_lhs;            /* column "Out" */
+};
+/* The registered table of g is exactly want[0 .. n-1]: the same names in the same order, each
+ * with these limits. Every difference is printed and counted as a harness failure (exit status
+ * 1). The dispatcher enforces what is registered (test_dispatch); this is what proves that the
+ * registered limits are the ones of the reference. Every test_cmd_<group>.c calls it once. */
+void mt_check_arities(const struct gw_group *g, const struct mt_arity *want, size_t n);
+
 /* iio_create_context(NULL, uri) registered as an owned GW_T_CONTEXT root whose destroy op is
  * iio_context_destroy; 0 on failure. Lets a group's test run without the context commands. */
 gw_id mt_open_context(const char *uri);
