@@ -76,6 +76,40 @@ iio_block_enqueue(block, n * iio_conv_get_step(tx_conv), false);
 the same on plain memory with hand-written channel descriptors and need no
 libiio objects.
 
+## Streams
+
+`iio-conv-stream.h` puts the buffer, its blocks and the converter behind one
+object, so that a frame is one call:
+
+```c
+#include <iio/iio-conv-stream.h>
+
+struct iio_conv_stream_params params = {
+	.nb_samples = 16384,   /* frame length */
+	.nb_blocks = 2,        /* kernel buffers */
+	.timeout_ms = 1000,
+	.spec = { .type = IIO_CONV_F32, .scale = IIO_CONV_SCALE_FULLSCALE, .complex_iq = true },
+};
+struct iio_conv_stream *rx;
+
+int ret = iio_conv_stream_open(iio_device_get_buffer(dev, 0), chans, 2, &params, &rx);
+
+ssize_t n = iio_conv_stream_read(rx, iq);   /* 16384, or 0 if no frame came in time */
+...
+iio_conv_stream_close(rx);
+```
+
+- Only the channels given are enabled, and host column k is channel k as
+  passed (or the pair 2k, 2k+1 for complex), whatever their order in the device.
+- `iio_conv_stream_write()` on an output buffer hands the frame to the
+  hardware before it returns; with `cyclic` the first frame is repeated until
+  the stream is closed. Closing a stream that is not cyclic lets the frames
+  already written go out first.
+- `timeout_ms` belongs to the stream: 0 never waits, a positive value waits
+  that long whatever the context's timeout is, a negative value blocks inside
+  libiio. A read or write that runs out of time returns 0 and can be repeated.
+- `iio_conv_stream_flush()` drops frames that are already captured and waiting.
+
 ## Host array
 
 | `type` | I8, U8, I16, U16, I32, U32, I64, U64, F32, F64 |

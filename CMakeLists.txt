@@ -52,9 +52,7 @@ if(IIO_CONV_WITH_LIBIIO)
 	set_target_properties(libiio1 PROPERTIES
 		IMPORTED_LOCATION ${LIBIIO_LIBRARY}
 		INTERFACE_INCLUDE_DIRECTORIES ${LIBIIO_INCLUDE_DIR})
-	if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/iio_adapter.c)
-		list(APPEND IIO_CONV_SOURCES src/iio_adapter.c)
-	endif()
+	list(APPEND IIO_CONV_SOURCES src/iio_adapter.c src/stream.c)
 endif()
 
 add_library(iio-conv-obj OBJECT ${IIO_CONV_SOURCES})
