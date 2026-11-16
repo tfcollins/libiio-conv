@@ -131,6 +131,45 @@ static void test_constants(void)
 	iio_conv_destroy(c);
 }
 
+static void test_raw(void)
+{
+	struct iio_conv_spec spec = { .type = IIO_CONV_I16, .raw = true };
+	struct iio_conv_chan ch = D16; /* 12 valid bits in 16 */
+	struct iio_conv *c;
+
+	ch.shift = 4;
+	CHECK(create1(ch, 2, spec, &c) == 0);
+	if (c) {
+		const struct chan_plan *p = iio_conv_test_get_plan(c, 0);
+
+		CHECK(p->bits == 16 && p->shift == 0);
+		CHECK(p->mask == 0xFFFF);
+		CHECK(p->lo == -32768 && p->hi == 32767);
+		CHECK(!p->affine);
+	}
+	iio_conv_destroy(c);
+
+	/* scaling then refers to the whole storage word */
+	spec = (struct iio_conv_spec){ .type = IIO_CONV_F64, .raw = true,
+		.scale = IIO_CONV_SCALE_FULLSCALE };
+	CHECK(create1(ch, 2, spec, &c) == 0);
+	if (c)
+		CHECK(iio_conv_test_get_plan(c, 0)->a == 1.0 / 32768);
+	iio_conv_destroy(c);
+
+	ch.is_signed = false;
+	CHECK(create1(ch, 2, spec, &c) == 0);
+	if (c) {
+		CHECK(iio_conv_test_get_plan(c, 0)->a == 1.0 / 65536);
+		CHECK(iio_conv_test_get_plan(c, 0)->hi == 65535);
+	}
+	iio_conv_destroy(c);
+
+	/* a malformed descriptor is still rejected */
+	ch = D16; ch.bits = 0;
+	CHECK(create1(ch, 2, spec, &c) == -EINVAL);
+}
+
 static void test_layout(void)
 {
 	struct iio_conv_chan chans[4] = { D16, D16, D16, D16 };
@@ -205,6 +244,7 @@ int main(void)
 {
 	test_errors();
 	test_constants();
+	test_raw();
 	test_layout();
 	test_swap();
 	TEST_MAIN_RETURN();

@@ -12,6 +12,8 @@ static struct iio_conv_chan chan(unsigned int length, unsigned int bits, unsigne
 	return c;
 }
 
+static void wr1(struct iio_conv_chan ch, struct iio_conv_spec spec, const void *in, uint8_t *bytes);
+
 /* read one sample of one channel */
 static void rd1(struct iio_conv_chan ch, struct iio_conv_spec spec, const uint8_t *bytes,
 		void *out)
@@ -67,6 +69,30 @@ static void test_read_vectors(void)
 	spec.saturate = false;
 	rd1(chan(16, 16, 0, true, false, 0), spec, (uint8_t[]){ 0xFF, 0xFF }, &u8);
 	CHECK(u8 == 255);
+}
+
+/* raw: the storage word as it is, only the byte order is handled */
+static void test_raw_vectors(void)
+{
+	struct iio_conv_spec i16 = { .type = IIO_CONV_I16, .raw = true };
+	struct iio_conv_spec u16s = { .type = IIO_CONV_U16, .raw = true };
+	struct iio_conv_spec f32 = { .type = IIO_CONV_F32, .raw = true };
+	int16_t s16 = 99; uint16_t u16 = 99; float f = 99;
+	uint8_t b[2];
+
+	rd1(chan(16, 12, 4, true, false, 0), i16, (uint8_t[]){ 0xF0, 0xFF }, &s16);
+	CHECK(s16 == -16); /* -1 without raw */
+	rd1(chan(16, 12, 4, false, true, 0), u16s, (uint8_t[]){ 0x12, 0x34 }, &u16);
+	CHECK(u16 == 0x1234);
+	rd1(chan(16, 12, 4, true, false, 0), f32, (uint8_t[]){ 0x00, 0x80 }, &f);
+	CHECK(f == -32768.0f);
+
+	s16 = 0x7FF1; memset(b, 0xAA, 2);
+	wr1(chan(16, 12, 4, true, false, 0), i16, &s16, b);
+	CHECK(b[0] == 0xF1 && b[1] == 0x7F); /* not masked to 12 bits, not shifted */
+	u16 = 0x1234; memset(b, 0xAA, 2);
+	wr1(chan(16, 12, 4, false, true, 0), u16s, &u16, b);
+	CHECK(b[0] == 0x12 && b[1] == 0x34);
 }
 
 static void test_read_complex_and_order(void)
@@ -278,7 +304,10 @@ static void test_round_trip(void)
 				w |= (unsigned __int128)src[ch->byte_offset + k] << sh;
 				w2 |= (unsigned __int128)src2[ch->byte_offset + k] << sh;
 			}
-			keep = (((unsigned __int128)1 << ch->bits) - 1) << ch->shift;
+			if (g.spec.raw)
+				keep = ((unsigned __int128)1 << ch->length) - 1;
+			else
+				keep = (((unsigned __int128)1 << ch->bits) - 1) << ch->shift;
 			CHECK(w2 == (w & keep));
 		}
 
@@ -324,6 +353,7 @@ int main(void)
 	unsigned int i;
 
 	test_read_vectors();
+	test_raw_vectors();
 	test_read_complex_and_order();
 	test_read_random();
 	test_write_vectors();

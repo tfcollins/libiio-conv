@@ -110,6 +110,7 @@ static inline void gen_random_case(uint64_t *rng, struct gen_case *g, unsigned i
 		g->spec.type = rng_range(rng, 2) ? IIO_CONV_F32 : IIO_CONV_F64;
 	g->spec.layout = rng_range(rng, 2) ? IIO_CONV_COLUMNS : IIO_CONV_INTERLEAVED;
 	g->spec.saturate = rng_range(rng, 2);
+	g->spec.raw = rng_range(rng, 6) == 0;
 	g->spec.complex_iq = !(g->nb_chans & 1) && rng_range(rng, 2);
 	if (gen_type_is_float(g->spec.type)) {
 		g->spec.scale = (enum iio_conv_scale)rng_range(rng, 3);
@@ -140,6 +141,9 @@ static inline void ref_read_one(const struct gen_case *g, unsigned int c,
 {
 	const struct iio_conv_chan *ch = &g->ch[c];
 	unsigned int i, nbytes = ch->length / 8;
+	/* raw: the whole storage word is the value */
+	unsigned int bits = g->spec.raw ? ch->length : ch->bits;
+	unsigned int shift = g->spec.raw ? 0 : ch->shift;
 	unsigned __int128 w = 0;
 	__int128 val;
 	double gain = 1.0, offset = 0.0, ug = 1.0, uo = 0.0, a, b;
@@ -150,11 +154,11 @@ static inline void ref_read_one(const struct gen_case *g, unsigned int c,
 
 		w |= (unsigned __int128)sample[ch->byte_offset + i] << sh;
 	}
-	w >>= ch->shift;
-	w &= ((unsigned __int128)1 << ch->bits) - 1;
+	w >>= shift;
+	w &= ((unsigned __int128)1 << bits) - 1;
 	val = (__int128)w;
-	if (ch->is_signed && (w >> (ch->bits - 1)))
-		val -= (__int128)1 << ch->bits;
+	if (ch->is_signed && (w >> (bits - 1)))
+		val -= (__int128)1 << bits;
 
 	if (gen_type_is_float(g->spec.type)) {
 		switch (g->spec.scale) {
@@ -163,7 +167,7 @@ static inline void ref_read_one(const struct gen_case *g, unsigned int c,
 			offset = ch->offset;
 			break;
 		case IIO_CONV_SCALE_FULLSCALE:
-			gain = 1.0 / pow(2.0, ch->is_signed ? ch->bits - 1 : ch->bits);
+			gain = 1.0 / pow(2.0, ch->is_signed ? bits - 1 : bits);
 			break;
 		default:
 			break;

@@ -49,8 +49,8 @@ static int plan_chan(struct chan_plan *p, const struct iio_conv_chan *ch,
 		return -EINVAL;
 
 	p->length = ch->length;
-	p->bits = ch->bits;
-	p->shift = ch->shift;
+	p->bits = spec->raw ? ch->length : ch->bits;
+	p->shift = spec->raw ? 0 : ch->shift;
 	p->is_signed = ch->is_signed;
 	p->saturate = spec->saturate;
 	p->type = spec->type;
@@ -62,7 +62,7 @@ static int plan_chan(struct chan_plan *p, const struct iio_conv_chan *ch,
 	p->swap = !ch->is_be && ch->length > 8;
 #endif
 
-	p->mask = ch->bits == 64 ? UINT64_MAX : (UINT64_C(1) << ch->bits) - 1;
+	p->mask = p->bits == 64 ? UINT64_MAX : (UINT64_C(1) << p->bits) - 1;
 	if (ch->is_signed) {
 		p->hi = p->mask >> 1;
 		p->lo = -(int64_t)p->hi - 1;
@@ -79,7 +79,7 @@ static int plan_chan(struct chan_plan *p, const struct iio_conv_chan *ch,
 		offset = ch->offset;
 		break;
 	case IIO_CONV_SCALE_FULLSCALE:
-		gain = ldexp(1.0, -(int)(ch->is_signed ? ch->bits - 1 : ch->bits));
+		gain = ldexp(1.0, -(int)(ch->is_signed ? p->bits - 1 : p->bits));
 		break;
 	default:
 		return -EINVAL;
