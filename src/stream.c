@@ -18,6 +18,7 @@
 #include <iio/iio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #define NB_TYPES (IIO_CONV_F64 + 1)
@@ -25,18 +26,33 @@
 
 struct iio_conv_stream {
 	struct iio_buffer_stream *bs;
-	struct iio_conv *conv;
+	const struct iio_channels_mask *mask; /* the one in use; belongs to bs */
 	struct iio_block **blocks;
 	bool *queued;       /* the block is with the backend, as far as we know */
 	unsigned int nb_blocks;
-	/* Blocks are queued in rotation, so this is the one queued longest
-	 * ago: the next to come back. */
+	/* Blocks are used in rotation. Receive: the block queued longest ago,
+	 * the next to come back. Transmit: the block the next write fills,
+	 * which is the oldest in flight once every block is. */
 	unsigned int curr;
+
+	/* What the converters are made from. chans, gain and offset hold
+	 * nb_chans entries as given and then, with complex_iq, the nb_chans / 2
+	 * entries of the I channels, for real arrays written to I/Q pairs.
+	 * spec.user_gain and spec.user_offset point at these copies. */
+	const struct iio_channel **chans;
+	double *gain, *offset;
 	unsigned int nb_chans;
+	struct iio_conv_spec spec;
+	/* [host type][host array is complex]; transmit makes them on first
+	 * use. conv is the one of the spec itself. */
+	struct iio_conv *convs[NB_TYPES][2];
+	struct iio_conv *conv;
+
 	size_t samples, step;
-	enum iio_conv_type type;
-	bool complex_iq, output, cyclic;
+	bool output, cyclic;
+	bool cyclic_sent;   /* the one frame of a cyclic stream is out */
 	bool started;       /* the buffer is enabled */
+	bool start_failed;  /* transmit: a frame is queued but the buffer is not started */
 	int timeout_ms;     /* wait policy */
 };
 
@@ -55,7 +71,8 @@ static bool not_ready(int ret)
 }
 
 /* Wait for block i to come back under a wait policy. Returns 1 when it is
- * ours again, 0 when it did not come back in time, or a negative errno. */
+ * ours again, 0 (which is IIO_CONV_STREAM_NO_FRAME) when it did not come back
+ * in time, or a negative errno. */
 static int wait_block(struct iio_conv_stream *s, unsigned int i, int timeout_ms)
 {
 	const struct timespec pause = { 0, POLL_INTERVAL_NS };
@@ -81,6 +98,82 @@ static int wait_block(struct iio_conv_stream *s, unsigned int i, int timeout_ms)
 		return ret;
 	s->queued[i] = false;
 	return 1;
+}
+
+/* The converter for host arrays of this type and complexity */
+static int get_conv(struct iio_conv_stream *s, enum iio_conv_type type, bool src_complex,
+		struct iio_conv **conv)
+{
+	struct iio_conv **slot = &s->convs[type][src_complex];
+	const struct iio_channel *const *chans = s->chans;
+	struct iio_conv_spec spec = s->spec;
+	unsigned int nb_chans = s->nb_chans;
+	int ret;
+
+	if (!*slot) {
+		spec.type = type;
+		if (spec.complex_iq && !src_complex) {
+			/* a real array on I/Q pairs: one column per pair, for
+			 * its I channel. The caller clears the Q channels. */
+			spec.complex_iq = false;
+			chans += nb_chans;
+			if (spec.user_gain)
+				spec.user_gain += nb_chans;
+			if (spec.user_offset)
+				spec.user_offset += nb_chans;
+			nb_chans /= 2;
+		}
+		ret = iio_conv_create(s->mask, chans, nb_chans, &spec, slot);
+		if (ret)
+			return ret;
+	}
+	*conv = *slot;
+	return 0;
+}
+
+/* Transmit: enable the buffer, which is done once the first frame is queued.
+ * A start that fails is tried again by the next write or flush, before any
+ * block is waited for. */
+static int tx_start(struct iio_conv_stream *s)
+{
+	int ret = iio_buffer_stream_start(s->bs);
+
+	s->started = ret >= 0;
+	s->start_failed = !s->started;
+	return s->started ? 0 : ret;
+}
+
+/* Transmit: wait under the wait policy until block i has been sent. A block
+ * libiio no longer has (-EPERM, see rx_turn()) is as free as one that was
+ * sent. Returns 1, 0 or a negative errno as wait_block() does. */
+static int tx_wait(struct iio_conv_stream *s, unsigned int i)
+{
+	int ret = wait_block(s, i, s->timeout_ms);
+
+	if (ret == -EPERM) {
+		s->queued[i] = false;
+		ret = 1;
+	}
+	return ret;
+}
+
+/* Transmit: wait for the frames in flight, oldest first. Returns
+ * IIO_CONV_STREAM_FRAME when none is left, or what tx_wait() said about the
+ * first that did not complete. */
+static int tx_drain(struct iio_conv_stream *s)
+{
+	unsigned int i, b;
+	int ret;
+
+	for (i = 0; i < s->nb_blocks; i++) {
+		b = (s->curr + i) % s->nb_blocks;
+		if (!s->queued[b])
+			continue;
+		ret = tx_wait(s, b);
+		if (ret <= 0)
+			return ret;
+	}
+	return IIO_CONV_STREAM_FRAME;
 }
 
 /* One turn of the receive rotation: take the oldest block back, convert it
@@ -132,7 +225,7 @@ int iio_conv_stream_open(struct iio_buffer *buf,
 {
 	struct iio_channels_mask *mask;
 	struct iio_conv_stream *s;
-	unsigned int i, k, nb_scan;
+	unsigned int i, k, nb_scan, nb_all;
 	int ret;
 
 	if (!buf || !chans || !nb_chans || !samples_per_frame || !nb_blocks || !spec || !stream)
@@ -165,9 +258,28 @@ int iio_conv_stream_open(struct iio_buffer *buf,
 	s->nb_blocks = cyclic ? 1 : nb_blocks;
 	s->nb_chans = nb_chans;
 	s->samples = samples_per_frame;
-	s->type = spec->type;
-	s->complex_iq = spec->complex_iq;
+	s->spec = *spec;
 	s->timeout_ms = IIO_CONV_STREAM_TIMEOUT_CONTEXT;
+
+	/* the caller's arrays need not outlive this call */
+	nb_all = nb_chans + (spec->complex_iq ? nb_chans / 2 : 0);
+	s->chans = calloc(nb_all, sizeof(*s->chans));
+	s->gain = spec->user_gain ? calloc(nb_all, sizeof(*s->gain)) : NULL;
+	s->offset = spec->user_offset ? calloc(nb_all, sizeof(*s->offset)) : NULL;
+	if (!s->chans || (spec->user_gain && !s->gain) || (spec->user_offset && !s->offset)) {
+		ret = -ENOMEM;
+		goto err_close;
+	}
+	for (i = 0; i < nb_all; i++) {
+		k = i < nb_chans ? i : 2 * (i - nb_chans);
+		s->chans[i] = chans[k];
+		if (s->gain)
+			s->gain[i] = spec->user_gain[k];
+		if (s->offset)
+			s->offset[i] = spec->user_offset[k];
+	}
+	s->spec.user_gain = s->gain;
+	s->spec.user_offset = s->offset;
 
 	/* Enable exactly the channels asked for. The buffer stream keeps its
 	 * own copy of the mask, which the backend may extend. */
@@ -186,8 +298,9 @@ int iio_conv_stream_open(struct iio_buffer *buf,
 		goto err_close;
 	}
 
-	ret = iio_conv_create(iio_buffer_stream_get_channels_mask(s->bs), chans, nb_chans,
-			spec, &s->conv);
+	s->mask = iio_buffer_stream_get_channels_mask(s->bs);
+
+	ret = get_conv(s, spec->type, spec->complex_iq, &s->conv);
 	if (ret)
 		goto err_close;
 	s->step = iio_conv_get_step(s->conv);
@@ -210,6 +323,10 @@ int iio_conv_stream_open(struct iio_buffer *buf,
 		if (ret)
 			goto err_close;
 		s->blocks[i] = block;
+		/* a write fills in the channels of the stream only: whatever
+		 * else the mask in use holds is sent as zero */
+		if (s->output)
+			memset(iio_block_start(block), 0, s->samples * s->step);
 	}
 
 	if (!s->output) {
@@ -227,6 +344,8 @@ int iio_conv_stream_open(struct iio_buffer *buf,
 		s->started = true;
 	}
 
+	/* A transmit stream is started by its first write. */
+
 	*stream = s;
 	return 0;
 
@@ -239,7 +358,7 @@ err_close:
 void iio_conv_stream_close(struct iio_conv_stream **stream)
 {
 	struct iio_conv_stream *s;
-	unsigned int i;
+	unsigned int i, k;
 
 	if (!stream || !*stream)
 		return;
@@ -247,6 +366,14 @@ void iio_conv_stream_close(struct iio_conv_stream **stream)
 	*stream = NULL;
 
 	if (s->bs) {
+		/* Frames written just before the close must still go out:
+		 * wait for them, each under the wait policy, and give up at
+		 * the first that does not complete. Not for a cyclic frame,
+		 * which never completes and must never be dequeued, and not
+		 * while the buffer is not started. */
+		if (s->output && s->started && !s->cyclic)
+			tx_drain(s);
+
 		/* From the cancel on, no block is dequeued: a cancelled
 		 * stream fails every dequeue, a stopped one never completes
 		 * it. Destroying a block that is still queued is fine. */
@@ -259,7 +386,12 @@ void iio_conv_stream_close(struct iio_conv_stream **stream)
 		iio_buffer_close(s->bs);
 	}
 
-	iio_conv_destroy(s->conv);
+	for (i = 0; i < NB_TYPES; i++)
+		for (k = 0; k < 2; k++)
+			iio_conv_destroy(s->convs[i][k]);
+	free(s->chans);
+	free(s->gain);
+	free(s->offset);
 	free(s->blocks);
 	free(s->queued);
 	free(s);
@@ -290,35 +422,99 @@ int iio_conv_stream_write(struct iio_conv_stream *stream, const void *src,
 {
 	if (!stream)
 		return -EINVAL;
-	return iio_conv_stream_write_typed(stream, src, nb_samples, stream->type,
-			stream->complex_iq);
+	return iio_conv_stream_write_typed(stream, src, nb_samples, stream->spec.type,
+			stream->spec.complex_iq);
 }
 
 int iio_conv_stream_write_typed(struct iio_conv_stream *stream, const void *src,
 		size_t nb_samples, enum iio_conv_type type, bool src_complex)
 {
-	(void)src; (void)nb_samples; (void)type; (void)src_complex;
+	struct iio_conv_stream *s = stream;
+	struct iio_conv *conv;
+	unsigned int b;
+	ssize_t n;
+	int ret;
 
-	if (!stream)
+	if (!s)
 		return -EINVAL;
-	if (!stream->output)
+	if (!s->output)
 		return -EBADF;
-	return -ENOSYS; /* transmit is not implemented yet */
+	if (!src || !nb_samples || nb_samples > s->samples || (unsigned int)type >= NB_TYPES)
+		return -EINVAL;
+	if (src_complex && !s->spec.complex_iq)
+		return -EINVAL;
+
+	/* An earlier write queued its frame but could not start the buffer.
+	 * Nothing may be waited for until it runs. */
+	if (s->start_failed) {
+		ret = tx_start(s);
+		if (ret)
+			return ret;
+	}
+	if (s->cyclic_sent)
+		return -EBUSY;
+
+	ret = get_conv(s, type, src_complex, &conv);
+	if (ret)
+		return ret;
+
+	b = s->curr;
+	if (s->queued[b]) {
+		/* every block is in flight: wait for the oldest frame */
+		ret = tx_wait(s, b);
+		if (ret <= 0)
+			return ret;
+	}
+
+	/* a real array on I/Q pairs fills in the I channels only: the Q
+	 * channels must not keep what an earlier frame left there */
+	if (s->spec.complex_iq && !src_complex)
+		memset(iio_block_start(s->blocks[b]), 0, nb_samples * s->step);
+	n = iio_conv_write(conv, s->blocks[b], src, nb_samples);
+	if (n < 0)
+		return (int)n;
+
+	ret = iio_block_enqueue(s->blocks[b], nb_samples * s->step, s->cyclic);
+	if (ret < 0)
+		return ret;
+	s->queued[b] = true;
+	s->cyclic_sent = s->cyclic;
+	s->curr = (b + 1) % s->nb_blocks;
+
+	/* the first frame is queued: the buffer can run */
+	if (!s->started) {
+		ret = tx_start(s);
+		if (ret)
+			return ret;
+	}
+	return IIO_CONV_STREAM_FRAME;
 }
 
 int iio_conv_stream_flush(struct iio_conv_stream *stream)
 {
+	struct iio_conv_stream *s = stream;
 	unsigned int i;
 	int ret;
 
-	if (!stream)
+	if (!s)
 		return -EINVAL;
-	if (stream->output)
-		return -ENOSYS; /* transmit is not implemented yet */
+
+	if (s->output) {
+		/* a cyclic frame never completes */
+		if (s->cyclic)
+			return IIO_CONV_STREAM_FRAME;
+		if (s->start_failed) {
+			ret = tx_start(s);
+			if (ret)
+				return ret;
+		}
+		/* before the first write no block is in flight */
+		return tx_drain(s);
+	}
 
 	/* whatever is captured goes straight back, oldest first */
-	for (i = 0; i < stream->nb_blocks; i++) {
-		ret = rx_turn(stream, NULL, IIO_CONV_STREAM_TIMEOUT_NONBLOCK);
+	for (i = 0; i < s->nb_blocks; i++) {
+		ret = rx_turn(s, NULL, IIO_CONV_STREAM_TIMEOUT_NONBLOCK);
 		if (ret < 0)
 			return ret;
 		if (ret == IIO_CONV_STREAM_NO_FRAME)
@@ -334,7 +530,7 @@ size_t iio_conv_stream_get_samples(const struct iio_conv_stream *stream)
 
 unsigned int iio_conv_stream_get_columns(const struct iio_conv_stream *stream)
 {
-	return stream->complex_iq ? stream->nb_chans / 2 : stream->nb_chans;
+	return stream->spec.complex_iq ? stream->nb_chans / 2 : stream->nb_chans;
 }
 
 size_t iio_conv_stream_get_step(const struct iio_conv_stream *stream)
@@ -349,12 +545,12 @@ unsigned int iio_conv_stream_get_nb_blocks(const struct iio_conv_stream *stream)
 
 enum iio_conv_type iio_conv_stream_get_type(const struct iio_conv_stream *stream)
 {
-	return stream->type;
+	return stream->spec.type;
 }
 
 bool iio_conv_stream_is_complex(const struct iio_conv_stream *stream)
 {
-	return stream->complex_iq;
+	return stream->spec.complex_iq;
 }
 
 bool iio_conv_stream_is_output(const struct iio_conv_stream *stream)

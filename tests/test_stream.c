@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: MIT */
 /*
  * The stream layer against the emulation backend: real blocks, receive data
- * from the ramp file of the fixture (see fixture_util.h).
+ * from the ramp file of the fixture (see fixture_util.h), transmit data into
+ * a file. emu writes a transmit block to <device>_buf<n>.bin when the block
+ * is dequeued, replacing the file, so the file shows the last frame that was
+ * collected, not the last one written.
  */
 #include <errno.h>
 #include <iio/iio.h>
@@ -25,6 +28,18 @@ static const struct iio_conv_spec iq16 = {
 	.complex_iq = true,
 };
 
+/* transmit cases: the same, saturating, 4 samples per frame */
+static const struct iio_conv_spec iq16_sat = {
+	.type = IIO_CONV_I16, .layout = IIO_CONV_COLUMNS, .scale = IIO_CONV_SCALE_NONE,
+	.complex_iq = true, .saturate = true,
+};
+
+static const int16_t A[8] = { 100, 1, -200, 2, 300, 3, -400, 4 };
+static const int16_t B[8] = { 11, 12, 13, 14, 15, 16, 17, 18 };
+static const int16_t C[8] = { 21, 22, 23, 24, 25, 26, 27, 28 };
+
+#define TX_FILE "emu-tx_buf0.bin"
+
 static double now_s(void)
 {
 	struct timespec ts;
@@ -43,13 +58,40 @@ static struct iio_conv_stream *open_rx(const struct iio_channel *const *chans,
 	return s;
 }
 
+static struct iio_conv_stream *open_tx(unsigned int nb_chans, unsigned int nb_blocks,
+		bool cyclic, const struct iio_conv_spec *spec)
+{
+	struct iio_conv_stream *s = NULL;
+
+	CHECK(iio_conv_stream_open(tx_buf, tx_ch, nb_chans, 4, nb_blocks, cyclic, spec, &s) == 0);
+	return s;
+}
+
+/* length of a file of the fixture directory in bytes, or a negative errno */
+static long file_len(const char *name)
+{
+	unsigned char bytes[256];
+
+	return fixture_read_file(dir, name, bytes, sizeof(bytes));
+}
+
+/* the file holds exactly these n 16-bit words */
+static bool file_is(const char *name, const void *words, size_t n)
+{
+	unsigned char bytes[256];
+
+	return fixture_read_file(dir, name, bytes, sizeof(bytes)) == (long)(2 * n) &&
+		!memcmp(bytes, words, 2 * n);
+}
+
 /* number of I/Q pairs of dst that are not the ramp from pair `first` on */
 static unsigned int ramp_mismatches(const int16_t *dst, unsigned int first, unsigned int n)
 {
 	unsigned int k, bad = 0;
 
 	for (k = 0; k < n; k++)
-		bad += dst[2 * k] != fixture_ramp_i(first + k) || dst[2 * k + 1] != fixture_ramp_q(first + k);
+		bad += dst[2 * k] != fixture_ramp_i(first + k) ||
+			dst[2 * k + 1] != fixture_ramp_q(first + k);
 	return bad;
 }
 
@@ -186,8 +228,10 @@ static void test_rx_pairing(void)
 	CHECK(iio_conv_stream_get_columns(s) == 2);
 	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
 	for (j = 0; j < 512; j++) {
-		bad += col0[2 * j] != fixture_ramp_i(2 * j + 1) || col0[2 * j + 1] != fixture_ramp_q(2 * j + 1);
-		bad += col1[2 * j] != fixture_ramp_i(2 * j) || col1[2 * j + 1] != fixture_ramp_q(2 * j);
+		bad += col0[2 * j] != fixture_ramp_i(2 * j + 1) ||
+			col0[2 * j + 1] != fixture_ramp_q(2 * j + 1);
+		bad += col1[2 * j] != fixture_ramp_i(2 * j) ||
+			col1[2 * j + 1] != fixture_ramp_q(2 * j);
 	}
 	CHECK(bad == 0);
 	CHECK(col0[0] == -2047 && col0[1] == 2046);
@@ -305,8 +349,11 @@ static void test_open_errors(void)
 	CHECK(iio_conv_stream_open(tx_buf, &one, 1, 4, 1, false, &real, &s) == -EINVAL);
 	one = iio_device_find_channel(multi, "voltage0", false);
 	CHECK(one != NULL);
-	CHECK(iio_conv_stream_open(iio_device_get_buffer(multi, 1), &one, 1, 4, 1, false, &real, &s) == -EINVAL);
+	CHECK(iio_conv_stream_open(iio_device_get_buffer(multi, 1), &one, 1, 4, 1, false,
+				&real, &s) == -EINVAL);
 
+	/* a frame whose size in bytes cannot be expressed */
+	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 2, SIZE_MAX / 2, 1, false, &iq16, &s) == -EINVAL);
 	/* I/Q pairing needs an even number of channels */
 	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 3, 4, 1, false, &iq16, &s) == -EINVAL);
 	/* nothing to repeat on an input */
@@ -315,10 +362,12 @@ static void test_open_errors(void)
 	/* formats the converter does not handle: repeated and float storage */
 	one = iio_device_find_channel(zoo, "rot_quaternion", false);
 	CHECK(one != NULL);
-	CHECK(iio_conv_stream_open(iio_device_get_buffer(zoo, 0), &one, 1, 4, 1, false, &real, &s) == -ENOTSUP);
+	CHECK(iio_conv_stream_open(iio_device_get_buffer(zoo, 0), &one, 1, 4, 1, false,
+				&real, &s) == -ENOTSUP);
 	one = iio_device_find_channel(zoo, "voltage3", false);
 	CHECK(one != NULL);
-	CHECK(iio_conv_stream_open(iio_device_get_buffer(zoo, 0), &one, 1, 4, 1, false, &real, &s) == -ENOTSUP);
+	CHECK(iio_conv_stream_open(iio_device_get_buffer(zoo, 0), &one, 1, 4, 1, false,
+				&real, &s) == -ENOTSUP);
 	CHECK(s == NULL);
 
 	/* a backend without buffers: the error of iio_buffer_open() */
@@ -426,6 +475,302 @@ static void test_wrong_direction(void)
 	CHECK(iio_conv_stream_set_timeout(NULL, 0) == -EINVAL);
 }
 
+/* --- transmit --- */
+
+static void test_tx_one_block(void)
+{
+	struct iio_conv_stream *s;
+	char path[PATH_MAX];
+
+	CHECK(fixture_path(dir, TX_FILE, path) == 0);
+	remove(path);
+	s = open_tx(2, 1, false, &iq16_sat);
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_get_step(s) == 4);
+	CHECK(iio_conv_stream_is_output(s));
+	CHECK(iio_conv_stream_get_nb_blocks(s) == 1);
+	CHECK(iio_conv_stream_get_columns(s) == 1);
+
+	/* nothing happens before the first write: the buffer is not started */
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_len(TX_FILE) == -ENOENT);
+
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_len(TX_FILE) == 0); /* started, frame in flight */
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, A, 8));
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, A, 8));
+
+	/* the only block is in flight: the second write waits for it */
+	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_write(s, C, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, B, 8));
+	iio_conv_stream_close(&s);
+	CHECK(file_is(TX_FILE, C, 8)); /* the last frame went out before the close */
+}
+
+static void test_tx_two_blocks(void)
+{
+	struct iio_conv_stream *s = open_tx(2, 2, false, &iq16_sat);
+
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_len(TX_FILE) == 0); /* two frames in flight, none collected */
+	CHECK(iio_conv_stream_write(s, C, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, A, 8));
+	iio_conv_stream_close(&s);
+	CHECK(file_is(TX_FILE, C, 8)); /* B, then C: the last frame is not lost */
+}
+
+static void test_tx_partial(void)
+{
+	struct iio_conv_stream *s = open_tx(2, 1, false, &iq16_sat);
+
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_write(s, A, 2) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, A, 4)); /* a shorter block: 8 bytes */
+
+	CHECK(iio_conv_stream_write(s, A, 0) == -EINVAL);
+	CHECK(iio_conv_stream_write(s, A, 5) == -EINVAL);
+	CHECK(iio_conv_stream_write(s, NULL, 4) == -EINVAL);
+	CHECK(iio_conv_stream_write_typed(s, A, 4, (enum iio_conv_type)10, true) == -EINVAL);
+	CHECK(iio_conv_stream_write_typed(s, A, 4, (enum iio_conv_type)-1, true) == -EINVAL);
+	CHECK(file_is(TX_FILE, A, 4));
+
+	/* a full frame after a partial one */
+	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, B, 8));
+	iio_conv_stream_close(&s);
+}
+
+/* A real array on I/Q channels: one column per pair, the Q channels are sent
+ * as zero, whatever the block held before. */
+static void test_tx_real_on_complex(void)
+{
+	static const int16_t R[4] = { 7, -8, 9, -10 }, sent[8] = { 7, 0, -8, 0, 9, 0, -10, 0 };
+	static const float F[4] = { 1.5f, -1.5f, 2.5f, 1e9f };
+	static const int16_t sent_f[8] = { 2, 0, -2, 0, 2, 0, 32767, 0 };
+	struct iio_conv_stream *s = open_tx(2, 1, false, &iq16_sat);
+
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_write(s, C, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_write_typed(s, R, 4, IIO_CONV_I16, false) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, sent, 8));
+
+	/* another type, and back to complex */
+	CHECK(iio_conv_stream_write(s, C, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_write_typed(s, F, 4, IIO_CONV_F32, false) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, sent_f, 8));
+	CHECK(iio_conv_stream_write(s, C, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, C, 8));
+	iio_conv_stream_close(&s);
+}
+
+/* Arrays of other types than the spec's: floats round to nearest even and
+ * saturate, integers saturate as the spec says. */
+static void test_tx_types(void)
+{
+	static const double D[8] = { 100.4, -200.6, 32767.9, -40000, 0.5, 1.5, 2.5, -0.5 };
+	static const int16_t sent_d[8] = { 100, -201, 32767, -32768, 0, 2, 2, 0 };
+	static const int32_t L[8] = { 40000, -40000, 5, -5, 32768, -32769, 0, 1 };
+	static const int16_t sent_l[8] = { 32767, -32768, 5, -5, 32767, -32768, 0, 1 };
+	struct iio_conv_stream *s = open_tx(2, 1, false, &iq16_sat);
+	unsigned int i;
+
+	if (!s)
+		return;
+	/* twice each: the second write uses the converter the first one made */
+	for (i = 0; i < 2; i++) {
+		CHECK(iio_conv_stream_write_typed(s, D, 4, IIO_CONV_F64, true) ==
+				IIO_CONV_STREAM_FRAME);
+		CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+		CHECK(file_is(TX_FILE, sent_d, 8));
+		CHECK(iio_conv_stream_write_typed(s, L, 4, IIO_CONV_I32, true) ==
+				IIO_CONV_STREAM_FRAME);
+		CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+		CHECK(file_is(TX_FILE, sent_l, 8));
+	}
+	/* the spec's own type is still what write() takes */
+	CHECK(iio_conv_stream_get_type(s) == IIO_CONV_I16);
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, A, 8));
+	iio_conv_stream_close(&s);
+}
+
+static void test_tx_real_stream(void)
+{
+	static const int16_t sent[8] = { 100, 300, 1, 3, -200, -400, 2, 4 };
+	struct iio_conv_spec spec = iq16_sat;
+	struct iio_conv_stream *s;
+
+	spec.complex_iq = false;
+	s = open_tx(2, 1, false, &spec);
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_get_columns(s) == 2);
+	CHECK(!iio_conv_stream_is_complex(s));
+	/* A as two columns of four samples */
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, sent, 8));
+	/* there are no pairs to take a complex array */
+	CHECK(iio_conv_stream_write_typed(s, A, 2, IIO_CONV_I16, true) == -EINVAL);
+	iio_conv_stream_close(&s);
+}
+
+static void test_tx_scaled(void)
+{
+	static const double D[8] = { 1, -1, 0.5, -0.5, 0.25, 0, 0, 0 };
+	static const int16_t sent[8] = { 32767, -32768, 16384, -16384, 8192, 0, 0, 0 };
+	struct iio_conv_spec spec = iq16_sat;
+	struct iio_conv_stream *s;
+
+	spec.type = IIO_CONV_F64;
+	spec.scale = IIO_CONV_SCALE_FULLSCALE;
+	s = open_tx(2, 1, false, &spec);
+	if (!s)
+		return;
+	/* scaling needs floats, also for a typed write */
+	CHECK(iio_conv_stream_write_typed(s, A, 4, IIO_CONV_I16, true) == -EINVAL);
+	CHECK(iio_conv_stream_write_typed(s, A, 4, IIO_CONV_I16, false) == -EINVAL);
+	CHECK(iio_conv_stream_write(s, D, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, sent, 8));
+	iio_conv_stream_close(&s);
+}
+
+/* The gains and offsets of the spec are copied at open, and a real array on
+ * I/Q channels uses those of the I channels. */
+static void test_tx_user_gain(void)
+{
+	static const double Z[2] = { 16, 16 };          /* two columns, one real sample */
+	static const double ZC[4] = { 16, 16, 16, 16 }; /* the same, complex */
+	static const float ZF[4] = { 16, 16, 16, 16 };
+	static const int16_t sent_c[4] = { 8, 4, 3, 2 }, sent_r[4] = { 8, 0, 3, 0 };
+	double gain[4] = { 2, 4, 8, 16 }, offset[4] = { 0, 0, -8, -16 };
+	struct iio_conv_spec spec = { .type = IIO_CONV_F64, .complex_iq = true,
+		.user_gain = gain, .user_offset = offset };
+	struct iio_conv_stream *s = open_tx(4, 1, false, &spec);
+
+	/* host = raw * gain + offset: 16 is 8, 4, (16 + 8) / 8 and (16 + 16) / 16 */
+	memset(gain, 0, sizeof(gain));
+	memset(offset, 0, sizeof(offset));
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_get_step(s) == 8);
+	CHECK(iio_conv_stream_get_columns(s) == 2);
+	CHECK(iio_conv_stream_write(s, ZC, 1) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, sent_c, 4));
+	CHECK(iio_conv_stream_write_typed(s, Z, 1, IIO_CONV_F64, false) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, sent_r, 4));
+	CHECK(iio_conv_stream_write_typed(s, ZF, 1, IIO_CONV_F32, true) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(file_is(TX_FILE, sent_c, 4));
+	iio_conv_stream_close(&s);
+}
+
+static void test_tx_cyclic(void)
+{
+	struct iio_conv_stream *s = open_tx(2, 4, true, &iq16_sat);
+	double t0;
+
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_get_nb_blocks(s) == 1);
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_write(s, A, 4) == -EBUSY);
+	CHECK(iio_conv_stream_write_typed(s, A, 4, IIO_CONV_I16, false) == -EBUSY);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	t0 = now_s();
+	iio_conv_stream_close(&s);
+	CHECK(now_s() - t0 < 1.0);
+	/* a cyclic block is never dequeued, so emu never wrote it */
+	CHECK(file_len(TX_FILE) == 0);
+}
+
+/* emu-multi buffer 1: outputs of 12 bits in the upper part of 16-bit words */
+static void test_tx_raw(void)
+{
+	static const double V[4] = { 0.5, -0.5, 1, -1 };      /* columns [0.5 -0.5], [1 -1] */
+	static const int16_t R[4] = { 32767, 1, -32768, -1 }; /* [32767 1], [-32768 -1] */
+	static const uint16_t sent_v[4] = { 0x4000, 0x7ff0, 0xc000, 0x8000 };
+	static const uint16_t sent_r[4] = { 0x7ff0, 0x8000, 0x0010, 0xfff0 };
+	static const uint16_t sent_raw[4] = { 0x7fff, 0x8000, 0x0001, 0xffff };
+	const struct iio_channel *chans[2] = {
+		iio_device_find_channel(multi, "voltage0", true),
+		iio_device_find_channel(multi, "voltage1", true),
+	};
+	struct iio_conv_spec spec = { .type = IIO_CONV_F64, .scale = IIO_CONV_SCALE_FULLSCALE };
+	struct iio_buffer *buf = iio_device_get_buffer(multi, 1);
+	struct iio_conv_stream *s = NULL;
+
+	CHECK(chans[0] && chans[1] && buf);
+	if (!chans[0] || !chans[1] || !buf)
+		return;
+
+	CHECK(iio_conv_stream_open(buf, chans, 2, 2, 1, false, &spec, &s) == 0);
+	if (s) {
+		CHECK(iio_conv_stream_write(s, V, 2) == IIO_CONV_STREAM_FRAME);
+		CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+		CHECK(file_is("emu-multi_buf1.bin", sent_v, 4));
+		iio_conv_stream_close(&s);
+	}
+
+	spec = (struct iio_conv_spec){ .type = IIO_CONV_I16, .saturate = true };
+	CHECK(iio_conv_stream_open(buf, chans, 2, 2, 1, false, &spec, &s) == 0);
+	if (s) {
+		CHECK(iio_conv_stream_write(s, R, 2) == IIO_CONV_STREAM_FRAME);
+		CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+		CHECK(file_is("emu-multi_buf1.bin", sent_r, 4));
+		iio_conv_stream_close(&s);
+	}
+
+	spec.raw = true;
+	CHECK(iio_conv_stream_open(buf, chans, 2, 2, 1, false, &spec, &s) == 0);
+	if (s) {
+		CHECK(iio_conv_stream_write(s, R, 2) == IIO_CONV_STREAM_FRAME);
+		CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+		CHECK(file_is("emu-multi_buf1.bin", sent_raw, 4));
+		iio_conv_stream_close(&s);
+	}
+}
+
+/* a receive and a transmit stream at once on one context */
+static void test_rx_and_tx(void)
+{
+	struct iio_conv_stream *r = open_rx(rx_ch, 2, 1024, 2, &iq16);
+	struct iio_conv_stream *t = open_tx(2, 2, false, &iq16_sat);
+	int16_t dst[2 * 1024];
+
+	if (r && t) {
+		CHECK(iio_conv_stream_read(r, dst) == IIO_CONV_STREAM_FRAME);
+		CHECK(ramp_mismatches(dst, 0, 1024) == 0);
+		CHECK(iio_conv_stream_write(t, A, 4) == IIO_CONV_STREAM_FRAME);
+		CHECK(iio_conv_stream_read(r, dst) == IIO_CONV_STREAM_FRAME);
+		CHECK(ramp_mismatches(dst, 1024, 1024) == 0);
+		CHECK(iio_conv_stream_flush(t) == IIO_CONV_STREAM_FRAME);
+		CHECK(file_is(TX_FILE, A, 8));
+		CHECK(iio_conv_stream_read(t, dst) == -EBADF);
+		CHECK(iio_conv_stream_write(r, A, 4) == -EBADF);
+	}
+	iio_conv_stream_close(&t);
+	iio_conv_stream_close(&r);
+}
+
 int main(int argc, char **argv)
 {
 	static const char *const rx_ids[5] = { "voltage0_i", "voltage0_q", "voltage1_i",
@@ -476,6 +821,18 @@ int main(int argc, char **argv)
 		test_rx_missing_file();
 		test_close_twice();
 		test_wrong_direction();
+
+		test_tx_one_block();
+		test_tx_two_blocks();
+		test_tx_partial();
+		test_tx_real_on_complex();
+		test_tx_types();
+		test_tx_real_stream();
+		test_tx_scaled();
+		test_tx_user_gain();
+		test_tx_cyclic();
+		test_tx_raw();
+		test_rx_and_tx();
 	}
 
 	iio_context_destroy(ctx);

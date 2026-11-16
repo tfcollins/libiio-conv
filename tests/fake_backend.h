@@ -37,6 +37,7 @@
 #include <errno.h>
 #include <iio/iio.h>
 #include <iio/iio-backend.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -211,7 +212,9 @@ static int fake_read_ev(struct iio_event_stream_pdata *pdata, struct iio_event *
 		bool nonblock)
 {
 	/* THRESH, RISING, VOLTAGE, channel 0; then MAG, FALLING, ACCEL, modifier X */
-	static const uint64_t ids[2] = { UINT64_C(0x0001000000000000), UINT64_C(0x0102010300000000) };
+	static const uint64_t ids[2] = {
+		UINT64_C(0x0001000000000000), UINT64_C(0x0102010300000000),
+	};
 
 	if (pdata->nb_read >= 2)
 		return nonblock ? -EBUSY : -ETIMEDOUT;

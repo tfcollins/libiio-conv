@@ -79,35 +79,52 @@ libiio objects.
 ## Stream layer
 
 `iio-conv-stream.h` puts the buffer stream, its blocks and the converter
-behind one object, so that a frame is one call:
+behind one object, so that a frame is one call. Receive complex single and
+transmit complex double, both scaled to [-1, 1):
 
 ```c
 #include <iio/iio-conv-stream.h>
 
-const struct iio_channel *chans[2] = { rx_i, rx_q };
+const struct iio_channel *rx_chans[2] = { rx_i, rx_q }, *tx_chans[2] = { tx_i, tx_q };
 struct iio_conv_spec spec = { .type = IIO_CONV_F32, .complex_iq = true,
 	.scale = IIO_CONV_SCALE_FULLSCALE };
-struct iio_conv_stream *rx;
+struct iio_conv_stream *rx, *tx;
 
-/* frames of 16384 samples, 4 blocks in rotation */
-int ret = iio_conv_stream_open(iio_device_get_buffer(dev, 0), chans, 2,
-		16384, 4, false, &spec, &rx);
+/* frames of 16384 samples, 4 blocks in rotation, not cyclic */
+int ret = iio_conv_stream_open(rx_buf, rx_chans, 2, 16384, 4, false, &spec, &rx);
+spec.type = IIO_CONV_F64;
+ret = iio_conv_stream_open(tx_buf, tx_chans, 2, 16384, 4, false, &spec, &tx);
 
-ret = iio_conv_stream_read(rx, iq);  /* 1: a frame, 0: none in time, < 0: errno */
-...
+ret = iio_conv_stream_read(rx, iq);           /* 1: a frame, 0: none in time, < 0: errno */
+ret = iio_conv_stream_write(tx, wave, 16384); /* 1: queued, 0: no free block in time */
+
+iio_conv_stream_close(&tx);                   /* lets the frames in flight go out */
 iio_conv_stream_close(&rx);
 ```
 
-- Only the channels given are enabled, and host column k is channel k as
-  passed (or the pair 2k, 2k+1 with `complex_iq`), whatever their order in
-  the device. Sizes and positions follow the mask the buffer really has, so
-  hardware that enables more channels than asked for is handled.
+- The direction is that of the buffer. Only the channels given are enabled,
+  and host column k is channel k as passed (or the pair 2k, 2k+1 with
+  `complex_iq`), whatever their order in the device. Sizes and positions
+  follow the mask the buffer really has, so hardware that enables more
+  channels than asked for is handled; on transmit such channels are sent as
+  zero.
 - A receive stream captures from the moment it is opened, into all its
   blocks. `iio_conv_stream_read()` returns `IIO_CONV_STREAM_FRAME` (1) with a
   whole frame or `IIO_CONV_STREAM_NO_FRAME` (0) with the array untouched;
   "no data in time" is not an error and the call can be repeated.
   `iio_conv_stream_flush()` drops the frames already captured, so that the
   next read waits for new data.
+- `iio_conv_stream_write()` converts and queues the frame before it returns;
+  the first write starts the buffer. When every block is in flight it first
+  waits for the oldest one, and returns 0 with nothing queued if that takes
+  too long. A frame may be shorter than the frame length.
+  `iio_conv_stream_write_typed()` takes an array of another element type, or
+  a real array for I/Q channels (the Q channels are then sent as zero).
+  `iio_conv_stream_flush()` waits, under the same policy, until every queued
+  frame has been sent. Closing the stream does that first, so a frame written
+  just before the close still goes out.
+- With `cyclic` set at open, the first frame written repeats until the stream
+  is closed. One block is used, and further writes return `-EBUSY`.
 - `iio_conv_stream_set_timeout()` picks how long a call may wait for a block:
 
   | value | wait |
@@ -118,7 +135,18 @@ iio_conv_stream_close(&rx);
 
   The timeout of the context, which is shared by everything on that context,
   is never changed.
-- Transmit (`iio_conv_stream_write()`) is not implemented yet.
+
+The tests run the stream layer on libiio's emulation backend (`emu:`) and on
+a scripted backend (`tests/fake_backend.h`). `emu:` delivers the bytes of
+`<device>_buf<n>.bin` beside the XML file as receive data, from the start
+again at its end, and replaces that file with every transmit block it gets
+back; this shows conversion, column order, the rotation of the blocks,
+partial frames and that the last frame goes out before a close. It does not
+show timing: a block is always ready, `cyclic` and non-blocking dequeues are
+ignored and cancelling does nothing. Blocks that are not ready, the three
+wait policies, cyclic transmit, failures and the order of the backend calls
+are tested on the scripted backend. The stream layer has not been run on
+hardware yet.
 
 ## Host array
 
