@@ -20,14 +20,20 @@
 		fputc('\n', stderr); \
 	} } while (0)
 
+static bool dp_fake_alive;    /* a context of dp_open_fake() exists: set there, cleared by its destroy op */
+
 static inline void dp_context_destroy_op(void *ptr, void *aux)
 {
 	(void)aux;
 	iio_context_destroy(ptr);
+	dp_fake_alive = false;
 }
 
 /* fake_reset(); fake_create_context(xml_path) as an owned GW_T_CONTEXT root whose destroy op is
- * iio_context_destroy */
+ * iio_context_destroy. One fake context at a time: the fake's state is one set of statics, and
+ * the reset would pull log and counters from under a live context. While an earlier one is
+ * alive this counts a test failure and returns 0, without a reset (the command
+ * test_create_fake_context answers the same case with iio:EBUSY). */
 static inline gw_id dp_open_fake(const char *xml_path)
 {
 	static const struct gw_ops ops = { NULL, dp_context_destroy_op };
@@ -37,6 +43,10 @@ static inline gw_id dp_open_fake(const char *xml_path)
 	/* as mt_open_context(): the gateway sets its handle table up in its first call (and in
 	 * the first one after MATLAB's exit handler ran); an entry added before would be forgotten */
 	mt_ok("mex_handle_count", 0);
+	if (dp_fake_alive) {
+		DP_FAIL("a fake context is alive: destroy it before dp_open_fake() makes another");
+		return 0;
+	}
 	fake_reset();
 	ctx = fake_create_context(xml_path);
 	if (iio_err(ctx)) {
@@ -49,6 +59,7 @@ static inline gw_id dp_open_fake(const char *xml_path)
 		DP_FAIL("the fake context was not registered");
 		return 0;
 	}
+	dp_fake_alive = true;
 	mt_ok("mex_handle_count", 0);    /* the gateway sees the handle and locks the MEX file */
 	return id;
 }

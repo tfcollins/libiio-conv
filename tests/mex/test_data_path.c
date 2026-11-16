@@ -4,6 +4,8 @@
 #include "mex_test.h"
 #include "dp_test.h"
 
+#include <limits.h>
+#include <math.h>
 #include <stdarg.h>
 
 const struct gw_group *const gw_groups[] = { &gw_group_mex, NULL };
@@ -86,6 +88,50 @@ static void test_names(void)
 	CHECK(dp_scale_from_name("IIO", &scale) == -EINVAL);
 }
 
+/* [] as an argument (dp_is_absent) and "takes its default" as an option value (dp_is_unset). */
+static void test_absent(void)
+{
+	static const struct { size_t m, n; bool absent; } dbl[] = {
+		{ 0, 0, true }, { 1, 0, false }, { 0, 1, false }, { 0, 3, false }, { 3, 0, false },
+	};
+	mxArray *a;
+
+	CHECK(dp_is_absent(NULL) && dp_is_unset(NULL));
+	for (unsigned int i = 0; i < sizeof(dbl) / sizeof(dbl[0]); i++) {
+		a = mxCreateDoubleMatrix(dbl[i].m, dbl[i].n, mxREAL);
+		CHECK(dp_is_absent(a) == dbl[i].absent);
+		CHECK(dp_is_unset(a));                       /* every empty double matrix */
+		mxDestroyArray(a);
+	}
+	a = mxCreateDoubleMatrix(0, 0, mxCOMPLEX);           /* complex([]) is [] too */
+	CHECK(dp_is_absent(a) && dp_is_unset(a));
+	mxDestroyArray(a);
+	a = mock_nd_array(mxDOUBLE_CLASS, mxREAL, 0, 0, 0);  /* Conventions: a 0x0x0 double is not [] */
+	CHECK(!dp_is_absent(a) && !dp_is_unset(a));
+	mxDestroyArray(a);
+	a = mock_nd_array(mxDOUBLE_CLASS, mxREAL, 1, 0, 2);
+	CHECK(!dp_is_absent(a) && !dp_is_unset(a));
+	mxDestroyArray(a);
+	a = mock_sparse_double(0, 0);
+	CHECK(!dp_is_absent(a) && !dp_is_unset(a));
+	mxDestroyArray(a);
+	a = mxCreateNumericMatrix(0, 0, mxSINGLE_CLASS, mxREAL);
+	CHECK(!dp_is_absent(a) && !dp_is_unset(a));
+	mxDestroyArray(a);
+	a = mxCreateNumericMatrix(1, 0, mxUINT64_CLASS, mxREAL);
+	CHECK(!dp_is_absent(a) && !dp_is_unset(a));
+	mxDestroyArray(a);
+	a = mt_str("");                                      /* '' is a value */
+	CHECK(!dp_is_absent(a) && !dp_is_unset(a));
+	mxDestroyArray(a);
+	a = mxCreateLogicalMatrix(0, 0);
+	CHECK(!dp_is_absent(a) && !dp_is_unset(a));
+	mxDestroyArray(a);
+	a = mt_dbl(0);
+	CHECK(!dp_is_absent(a) && !dp_is_unset(a));
+	mxDestroyArray(a);
+}
+
 static void test_per_channel(void)
 {
 	double *v = (double *)&v;
@@ -133,7 +179,29 @@ static void test_per_channel(void)
 	a = dmat(2, 2, 1.0, 2.0, 3.0, 4.0);                             /* a matrix */
 	CHECK(dp_per_channel(a, 4, false, &v) == -EINVAL && v == NULL);
 	mxDestroyArray(a);
-	a = mxCreateDoubleMatrix(1, 0, mxREAL);                         /* empty, but not [] */
+	/* an empty double matrix is "not given", as [] is: MATLAB's default for Gain and Offset is
+	 * double.empty(1,0), and a user's zeros(1,0) arrives the same way */
+	a = mxCreateDoubleMatrix(1, 0, mxREAL);
+	v = (double *)&v;
+	CHECK(dp_per_channel(a, 2, false, &v) == 0 && v == NULL);
+	v = (double *)&v;
+	CHECK(dp_per_channel(a, 3, true, &v) == 0 && v == NULL);        /* as []: nothing is checked */
+	mxDestroyArray(a);
+	a = mxCreateDoubleMatrix(0, 1, mxREAL);
+	v = (double *)&v;
+	CHECK(dp_per_channel(a, 2, false, &v) == 0 && v == NULL);
+	mxDestroyArray(a);
+	a = mxCreateDoubleMatrix(0, 3, mxREAL);
+	v = (double *)&v;
+	CHECK(dp_per_channel(a, 2, false, &v) == 0 && v == NULL);
+	mxDestroyArray(a);
+	a = mock_nd_array(mxDOUBLE_CLASS, mxREAL, 0, 0, 0);             /* N-D: a value, and a wrong one */
+	CHECK(dp_per_channel(a, 2, false, &v) == -EINVAL && v == NULL);
+	mxDestroyArray(a);
+	a = mock_sparse_double(0, 0);
+	CHECK(dp_per_channel(a, 2, false, &v) == -EINVAL && v == NULL);
+	mxDestroyArray(a);
+	a = mxCreateNumericMatrix(1, 0, mxSINGLE_CLASS, mxREAL);        /* empty, but not a double */
 	CHECK(dp_per_channel(a, 2, false, &v) == -EINVAL && v == NULL);
 	mxDestroyArray(a);
 	a = mxCreateNumericMatrix(1, 1, mxINT16_CLASS, mxREAL);
@@ -210,7 +278,9 @@ static void test_options(void)
 	double *gain, *offset, num;
 	const char *two[2] = { "class", "complex" };
 	char bad[32], text[8];
+	const mxArray *f;
 	mxClassID cls;
+	long long ll;
 	mxArray *o;
 	bool b;
 
@@ -318,7 +388,18 @@ static void test_options(void)
 	CHECK(dp_opt_spec(o, &spec, &cls) == -EINVAL);
 	CHECK(dp_opt_number(o, "samples", 1, &num) == -EINVAL);
 	mxDestroyArray(o);
-	o = mxCreateDoubleMatrix(1, 0, mxREAL);
+	o = mxCreateDoubleMatrix(1, 0, mxREAL);        /* the options ARGUMENT is [] or a struct, nothing else */
+	CHECK(dp_opt_check(o, allowed, 6, bad, sizeof(bad)) == -EINVAL);
+	CHECK(dp_opt_number(o, "samples", 1, &num) == -EINVAL);
+	mxDestroyArray(o);
+	o = mxCreateDoubleMatrix(0, 3, mxREAL);
+	CHECK(dp_opt_check(o, allowed, 6, bad, sizeof(bad)) == -EINVAL);
+	CHECK(dp_opt_spec(o, &spec, &cls) == -EINVAL);
+	mxDestroyArray(o);
+	o = mock_nd_array(mxDOUBLE_CLASS, mxREAL, 0, 0, 0);
+	CHECK(dp_opt_check(o, allowed, 6, bad, sizeof(bad)) == -EINVAL);
+	mxDestroyArray(o);
+	o = mock_sparse_double(0, 0);
 	CHECK(dp_opt_check(o, allowed, 6, bad, sizeof(bad)) == -EINVAL);
 	mxDestroyArray(o);
 	o = mxCreateCellMatrix(1, 1);
@@ -363,6 +444,124 @@ static void test_options(void)
 	CHECK(dp_opt_string(o, "d", "x", text, sizeof(text)) == -EINVAL);          /* a column */
 	CHECK(dp_opt_string(o, "e", "x", text, sizeof(text)) == -EINVAL);          /* a string object */
 	CHECK(dp_opt_bool(o, "f", false, &b) == -EINVAL);                          /* not a scalar */
+	mxDestroyArray(o);
+
+	/* a field that holds an empty double matrix takes its default, as one that holds [] does:
+	 * these are the defaults of the M classes (Gain, Offset, Samples = double.empty(1,0)) */
+	o = mkstruct(8, "gain", mxCreateDoubleMatrix(1, 0, mxREAL), "offset", mxCreateDoubleMatrix(0, 1, mxREAL),
+		"samples", mxCreateDoubleMatrix(1, 0, mxREAL), "class", mxCreateDoubleMatrix(0, 3, mxREAL),
+		"complex", mxCreateDoubleMatrix(1, 0, mxREAL), "x", mock_nd_array(mxDOUBLE_CLASS, mxREAL, 0, 0, 0),
+		"y", mock_sparse_double(0, 0), "z", mxCreateNumericMatrix(1, 0, mxINT32_CLASS, mxREAL));
+	CHECK(dp_opt_spec(o, &spec, &cls) == 0 && spec.type == IIO_CONV_F64 && !spec.complex_iq);
+	gain = offset = (double *)&spec;
+	CHECK(dp_opt_gains(o, 2, &spec, &gain, &offset) == 0);
+	CHECK(gain == NULL && offset == NULL && spec.user_gain == NULL && spec.user_offset == NULL);
+	CHECK(dp_opt_number(o, "samples", 7, &num) == 0 && num == 7);
+	CHECK(dp_opt_int(o, "samples", 1, 100, 7, &ll) == 0 && ll == 7);
+	CHECK(dp_opt_bool(o, "complex", true, &b) == 0 && b);
+	CHECK(dp_opt_string(o, "class", "dflt", text, sizeof(text)) == 0 && !strcmp(text, "dflt"));
+	CHECK(dp_opt_field(o, "gain", &f) == 0 && f == NULL);
+	CHECK(dp_opt_field(o, "nope", &f) == 0 && f == NULL);
+	/* ... but an N-D, a sparse or a non-double empty array is a value */
+	CHECK(dp_opt_field(o, "x", &f) == 0 && f != NULL);
+	CHECK(dp_opt_field(o, "z", &f) == 0 && f != NULL && mxGetClassID(f) == mxINT32_CLASS);
+	CHECK(dp_opt_number(o, "x", 7, &num) == -EINVAL);
+	CHECK(dp_opt_number(o, "y", 7, &num) == -EINVAL);
+	CHECK(dp_opt_number(o, "z", 7, &num) == -EINVAL);
+	CHECK(dp_opt_int(o, "x", 0, 100, 7, &ll) == -EINVAL);
+	CHECK(dp_opt_int(o, "y", 0, 100, 7, &ll) == -EINVAL);
+	CHECK(dp_opt_int(o, "z", 0, 100, 7, &ll) == -EINVAL);
+	CHECK(dp_opt_bool(o, "y", false, &b) == -EINVAL);
+	CHECK(dp_opt_string(o, "x", "dflt", text, sizeof(text)) == -EINVAL);
+	mxDestroyArray(o);
+	o = mkstruct(1, "gain", mock_nd_array(mxDOUBLE_CLASS, mxREAL, 0, 0, 0));
+	CHECK(dp_opt_gains(o, 2, &spec, &gain, &offset) == -EINVAL && gain == NULL && offset == NULL);
+	mxDestroyArray(o);
+
+	/* text: shapes, the size of the result, embedded NULs */
+	o = mkstruct(7, "a", mock_char_array(1, 2, 2, "abcd"), "b", mock_char_array(0, 0, 0, ""),
+		"c", mock_char_array(0, 3, 1, ""), "d", mt_str("abXcd"), "e", mt_str("eX"), "f", mt_str("aX"),
+		"g", mt_str("X"));
+	((mxChar *)mxGetData(mxGetField(o, 0, "d")))[2] = 0;           /* 'ab', NUL, 'cd' */
+	((mxChar *)mxGetData(mxGetField(o, 0, "e")))[0] = 0xE9;        /* e acute (two bytes of UTF-8), NUL */
+	((mxChar *)mxGetData(mxGetField(o, 0, "e")))[1] = 0;
+	((mxChar *)mxGetData(mxGetField(o, 0, "f")))[1] = 0;           /* 'a', NUL */
+	((mxChar *)mxGetData(mxGetField(o, 0, "g")))[0] = 0;           /* NUL alone */
+	CHECK(dp_opt_string(o, "a", "x", text, sizeof(text)) == -EINVAL);          /* 1x2x2 */
+	CHECK(dp_opt_string(o, "b", "x", text, sizeof(text)) == -EINVAL);          /* 0x0x0 */
+	strcpy(text, "?");
+	CHECK(dp_opt_string(o, "c", "x", text, sizeof(text)) == 0 && !strcmp(text, ""));   /* 0x3: '' */
+	CHECK(dp_opt_string(o, "d", "x", text, sizeof(text)) == -EINVAL);
+	CHECK(dp_opt_string(o, "e", "x", text, sizeof(text)) == -EINVAL);
+	CHECK(dp_opt_string(o, "f", "x", text, sizeof(text)) == -EINVAL);
+	CHECK(dp_opt_string(o, "g", "x", text, sizeof(text)) == -EINVAL);
+	strcpy(text, "?");
+	CHECK(dp_opt_string(o, "c", "x", text, 0) == -EINVAL && !strcmp(text, "?"));       /* no room at all */
+	CHECK(dp_opt_string(o, "z", "x", text, 0) == -EINVAL && !strcmp(text, "?"));
+	CHECK(dp_opt_string(o, "c", "x", text, 1) == 0 && !strcmp(text, ""));
+	CHECK(dp_opt_string(o, "z", NULL, text, 1) == 0 && !strcmp(text, ""));
+	CHECK(dp_opt_string(o, "z", "x", text, 1) == -EINVAL);
+	mxDestroyArray(o);
+	o = mkstruct(1, "class", mock_char_array(1, 2, 2, "int8"));
+	CHECK(dp_opt_spec(o, &spec, &cls) == -EINVAL);
+	mxDestroyArray(o);
+	o = mkstruct(1, "scale", mt_str("iioX"));
+	((mxChar *)mxGetData(mxGetField(o, 0, "scale")))[3] = 0;       /* 'iio', NUL: not 'iio' */
+	CHECK(dp_opt_spec(o, &spec, &cls) == -EINVAL);
+	mxDestroyArray(o);
+	o = mkstruct(1, "class", mt_str("\xc3\xa9"));                   /* non-ASCII text is text */
+	CHECK(dp_opt_string(o, "class", "x", text, sizeof(text)) == 0 && !strcmp(text, "\xc3\xa9"));
+	CHECK(dp_opt_string(o, "class", "x", text, 2) == -EINVAL);     /* two bytes and the NUL do not fit */
+	mxDestroyArray(o);
+
+	/* integers: dp_opt_int is the only way from an option to a C integer */
+	o = mkstruct(8, "a", mt_dbl(1024), "b", mt_i64(-3), "c", mt_dbl(2.5), "d", mt_dbl(1e300),
+		"e", mt_u64(UINT64_MAX), "f", mt_i64(INT64_C(9007199254740993)), "g", mt_u64(7),
+		"h", mt_i64(INT64_MIN));
+	ll = 77;
+	CHECK(dp_opt_int(o, "a", 1, 4096, 5, &ll) == 0 && ll == 1024);
+	CHECK(dp_opt_int(o, "a", 1024, 1024, 5, &ll) == 0 && ll == 1024);
+	ll = 77;
+	CHECK(dp_opt_int(o, "a", 1, 1023, 5, &ll) == -EINVAL && ll == 77);        /* above hi; *out untouched */
+	CHECK(dp_opt_int(o, "a", 1025, 4096, 5, &ll) == -EINVAL && ll == 77);     /* below lo */
+	CHECK(dp_opt_int(o, "b", -5, 5, 0, &ll) == 0 && ll == -3);
+	CHECK(dp_opt_int(o, "b", 0, 5, 0, &ll) == -EINVAL);
+	CHECK(dp_opt_int(o, "c", 0, 5, 0, &ll) == -EINVAL);                        /* 2.5 */
+	CHECK(dp_opt_int(o, "d", LLONG_MIN, LLONG_MAX, 0, &ll) == -EINVAL);        /* 1e300 */
+	CHECK(dp_opt_int(o, "e", LLONG_MIN, LLONG_MAX, 0, &ll) == -EINVAL);        /* 2^64 - 1 */
+	CHECK(dp_opt_int(o, "f", 0, LLONG_MAX, 0, &ll) == 0 && ll == 9007199254740993LL);   /* not through double */
+	CHECK(dp_opt_int(o, "g", 0, 7, 0, &ll) == 0 && ll == 7);
+	CHECK(dp_opt_int(o, "h", LLONG_MIN, 0, 0, &ll) == 0 && ll == LLONG_MIN);
+	CHECK(dp_opt_int(o, "z", 1, 4096, 9, &ll) == 0 && ll == 9);                /* missing */
+	CHECK(dp_opt_int(o, "z", 1, 4096, -1, &ll) == 0 && ll == -1);              /* the default is the caller's */
+	CHECK(dp_opt_int(NULL, "a", 1, 4096, 9, &ll) == 0 && ll == 9);
+	mxDestroyArray(o);
+	o = mkstruct(8, "a", mt_dbl(NAN), "b", mt_dbl(INFINITY), "c", mt_dbl(-INFINITY),
+		"d", mt_dbl(9223372036854775808.0), "e", mt_dbl(-9223372036854775808.0), "f", mt_dbl(-0.0),
+		"g", mxCreateNumericMatrix(1, 1, mxSINGLE_CLASS, mxREAL), "h", mt_dbl(4294967296.0));
+	*(float *)mxGetData(mxGetField(o, 0, "g")) = 12.0f;
+	ll = 77;
+	CHECK(dp_opt_int(o, "a", LLONG_MIN, LLONG_MAX, 0, &ll) == -EINVAL && ll == 77);
+	CHECK(dp_opt_int(o, "b", LLONG_MIN, LLONG_MAX, 0, &ll) == -EINVAL);
+	CHECK(dp_opt_int(o, "c", LLONG_MIN, LLONG_MAX, 0, &ll) == -EINVAL);
+	CHECK(dp_opt_int(o, "d", LLONG_MIN, LLONG_MAX, 0, &ll) == -EINVAL);        /* 2^63 */
+	CHECK(dp_opt_int(o, "e", LLONG_MIN, LLONG_MAX, 0, &ll) == 0 && ll == LLONG_MIN);
+	CHECK(dp_opt_int(o, "f", 0, 0, 5, &ll) == 0 && ll == 0);
+	CHECK(dp_opt_int(o, "g", 0, 100, 5, &ll) == 0 && ll == 12);
+	CHECK(dp_opt_int(o, "h", 0, UINT_MAX, 5, &ll) == -EINVAL);                 /* 2^32 */
+	CHECK(dp_opt_int(o, "h", 0, LLONG_MAX, 5, &ll) == 0 && ll == 4294967296LL);
+	mxDestroyArray(o);
+	o = mkstruct(6, "a", mt_bool(true), "b", mt_str("4"), "c", dmat(1, 2, 1.0, 2.0),
+		"d", mxCreateDoubleMatrix(1, 1, mxCOMPLEX), "e", mock_sparse_double(1, 1), "f", mock_string_object());
+	CHECK(dp_opt_int(o, "a", 0, 9, 5, &ll) == -EINVAL);
+	CHECK(dp_opt_int(o, "b", 0, 9, 5, &ll) == -EINVAL);
+	CHECK(dp_opt_int(o, "c", 0, 9, 5, &ll) == -EINVAL);
+	CHECK(dp_opt_int(o, "d", 0, 9, 5, &ll) == -EINVAL);
+	CHECK(dp_opt_int(o, "e", 0, 9, 5, &ll) == -EINVAL);
+	CHECK(dp_opt_int(o, "f", 0, 9, 5, &ll) == -EINVAL);
+	mxDestroyArray(o);
+	o = mxCreateStructMatrix(1, 2, 2, two);
+	CHECK(dp_opt_int(o, "class", 0, 9, 5, &ll) == -EINVAL);
 	mxDestroyArray(o);
 
 	/* dp_opt_spec passes the errors of its fields on */
@@ -462,6 +661,22 @@ static void test_emu(const struct mt_fixture *fx)
 	CHECK(dp_add_bufstream((struct iio_buffer_stream *)&n, blk) == 0);
 	CHECK(dp_add_mask((struct iio_channels_mask *)&n, bs) == 0);
 	CHECK(dp_add_mask(NULL, rx) == 0);
+	/* nor does a parent of another type, or none: the entry would be closed in the wrong order
+	 * (a block after its buffer stream), or outlive its context as a root */
+	CHECK(dp_add_block((struct iio_block *)&n, mask) == 0);
+	CHECK(dp_add_block((struct iio_block *)&n, buf) == 0);
+	CHECK(dp_add_block((struct iio_block *)&n, ctx) == 0);
+	CHECK(dp_add_block((struct iio_block *)&n, 0) == 0);
+	CHECK(dp_add_bufstream((struct iio_buffer_stream *)&n, rx) == 0);
+	CHECK(dp_add_bufstream((struct iio_buffer_stream *)&n, mask) == 0);
+	CHECK(dp_add_bufstream((struct iio_buffer_stream *)&n, ctx) == 0);
+	CHECK(dp_add_bufstream((struct iio_buffer_stream *)&n, 0) == 0);
+	CHECK(dp_add_mask((struct iio_channels_mask *)&n, buf) == 0);
+	CHECK(dp_add_mask((struct iio_channels_mask *)&n, chn) == 0);
+	CHECK(dp_add_mask((struct iio_channels_mask *)&n, ctx) == 0);
+	CHECK(dp_add_mask((struct iio_channels_mask *)&n, 0) == 0);
+	CHECK(gw_handle_find(GW_T_BLOCK, &n) == 0 && gw_handle_find(GW_T_BUFFER_STREAM, &n) == 0);
+	CHECK(gw_handle_find(GW_T_MASK, &n) == 0);
 	CHECK(gw_handle_count() == n - 3);
 
 	/* a mask goes when it is destroyed, the others with their context */
@@ -533,16 +748,38 @@ static void test_fake(const struct mt_fixture *fx, bool started)
 static void test_fake_single(const struct mt_fixture *fx)
 {
 	gw_id ctx, tx, bs, b1, b2;
+	const struct iio_device *phy;
 
 	fake.rx_frames = 77;
 	ctx = dp_open_fake(fx->xml);
 	CHECK(ctx != 0 && fake.rx_frames == 3 && !strcmp(fake.log, ""));
+	CHECK(fake.timeout == FAKE_NO_TIMEOUT && fake.attr_data == NULL && fake.attr_len == 0);
+	CHECK(iio_context_set_timeout(gw_handle_ptr(ctx, GW_T_CONTEXT), 250) == 0 && fake.timeout == 250);
+	phy = gw_handle_ptr(dp_dev(ctx, "emu-phy"), GW_T_DEVICE);
+	CHECK(phy != NULL && iio_attr_write_raw(iio_device_find_attr(phy, "text"), "a\0b", 3) == 3);
+	CHECK(fake.attr_len == 3 && fake.attr_data && !memcmp(fake.attr_data, "a\0b", 3));
 	tx = dp_dev(ctx, "emu-tx");
 	bs = dp_bufstream(dp_buf(tx, 0), dp_mask(tx, true, 2, "voltage0_i", "voltage0_q"));
 	b1 = dp_block(bs, 16);
 	b2 = dp_block(bs, 16);
 	CHECK(bs && b1 && b2);
 	CHECK(dp_device_of(b2) == gw_handle_ptr(tx, GW_T_DEVICE));
+	/* the fake's state is one set of statics: no second fake context while one is alive
+	 * (the builder counts a test failure; that one is expected) */
+	{
+		size_t count = gw_handle_count();
+		int failures = test_failures;
+		gw_id second;
+
+		fprintf(stderr, "expected: ");
+		second = dp_open_fake(fx->xml);
+		CHECK(second == 0);
+		CHECK(test_failures == failures + 1);
+		if (test_failures == failures + 1)
+			test_failures = failures;
+		CHECK(gw_handle_count() == count && !strcmp(fake.log, "OBB"));
+		CHECK(gw_handle_type(ctx) == GW_T_CONTEXT && gw_handle_type(b2) == GW_T_BLOCK);
+	}
 	gw_handle_destroy(b1);
 	CHECK(!strcmp(fake.log, "OBBF"));
 	CHECK(gw_handle_type(b1) == GW_T_NONE && gw_handle_type(b2) == GW_T_BLOCK);
@@ -551,6 +788,20 @@ static void test_fake_single(const struct mt_fixture *fx)
 	CHECK(gw_handle_type(b2) == GW_T_NONE && gw_handle_type(tx) == GW_T_DEVICE);
 	gw_handle_destroy(ctx);
 	CHECK(!strcmp(fake.log, "OBBFXFXC"));
+	CHECK(gw_handle_count() == 0);
+
+	/* ... and a new one once it is gone, also after an emu: context and after a MATLAB exit */
+	ctx = dp_open_fake(fx->xml);
+	CHECK(ctx != 0 && !strcmp(fake.log, ""));
+	CHECK(fake.timeout == FAKE_NO_TIMEOUT && fake.attr_data == NULL && fake.attr_len == 0);
+	mock_exit_matlab();
+	CHECK(gw_handle_count() == 0);
+	tx = mt_open_context(fx->uri);
+	CHECK(tx != 0);
+	ctx = dp_open_fake(fx->xml);
+	CHECK(ctx != 0 && ctx != tx);
+	gw_handle_destroy(ctx);
+	gw_handle_destroy(tx);
 	CHECK(gw_handle_count() == 0);
 }
 
@@ -562,6 +813,7 @@ int main(int argc, char **argv)
 		return 2;
 
 	test_names();
+	test_absent();
 	test_per_channel();
 	test_check_matrix();
 	test_options();

@@ -710,7 +710,9 @@ const struct iio_device *dp_device_of(gw_id id);
  * parent; destroy op iio_channels_mask_destroy / iio_buffer_close / iio_block_destroy. The buffer
  * stream also gets a pre_destroy op: iio_buffer_stream_cancel(), then iio_buffer_stream_stop() if
  * gw_handle_flags(gw_handle_find(GW_T_BUFFER_STREAM, bs)) has BS_STARTED. Returns 0
- * when the table cannot take it (the caller then destroys the object and returns -ENOMEM). */
+ * when the table cannot take it (the caller then destroys the object and returns -ENOMEM).
+ * The parent must be a live GW_T_DEVICE (mask), GW_T_BUFFER (buffer stream) or
+ * GW_T_BUFFER_STREAM (block) entry, else 0 too. */
 gw_id dp_add_mask(struct iio_channels_mask *mask, gw_id dev);
 gw_id dp_add_bufstream(struct iio_buffer_stream *bs, gw_id buf);
 gw_id dp_add_block(struct iio_block *blk, gw_id bs);
@@ -719,16 +721,29 @@ int dp_class_from_name(const char *name, enum iio_conv_type *type, mxClassID *cl
 int dp_class_from_id(mxClassID cls, enum iio_conv_type *type);
 mxClassID dp_class_of_type(enum iio_conv_type type);     /* IIO_CONV_I16 -> mxINT16_CLASS, ... */
 int dp_scale_from_name(const char *name, enum iio_conv_scale *scale);
-/* a: [] (then *out = NULL), a real double scalar, or a real double vector with one entry per output
- * column. *out gets nb_chans entries (mxMalloc, the caller mxFree()s it: per-call scratch; the
- * converter and the stream layer copy the values; a complex pair gets its column's value twice). */
+/* "Absent", for an ARGUMENT (the options argument itself): no array, or [] (0x0 double). */
+bool dp_is_absent(const mxArray *a);
+/* "Not given", for an option VALUE: no array, or a full 2-D double without elements ([], 1x0, 0x1,
+ * 0x3). An N-D, a sparse or a non-double empty array is a value. */
+bool dp_is_unset(const mxArray *a);
+/* a: not given (dp_is_unset(); then *out = NULL), a real double scalar, or a real double vector with
+ * one entry per output column. *out gets nb_chans entries (mxMalloc, the caller mxFree()s it: per-call
+ * scratch; the converter and the stream layer copy the values; a complex pair gets its column's value twice). */
 int dp_per_channel(const mxArray *a, unsigned int nb_chans, bool is_complex, double **out);
 /* full numeric 2-D array of one of the ten classes; tests mxGetNumberOfDimensions(a) == 2 itself
  * (mxGetM / mxGetN alone take a 4-by-1-by-2 array for a 4-by-2 matrix) */
 int dp_check_matrix(const mxArray *a, enum iio_conv_type *type, bool *is_complex);
 /* opts: [] or a scalar struct. A field outside `allowed` is -EINVAL, its name copied to bad. */
 int dp_opt_check(const mxArray *opts, const char *const *allowed, unsigned int nb, char *bad, size_t len);
+/* *f = the value of the field, or NULL when it takes its default (missing, or dp_is_unset()). */
+int dp_opt_field(const mxArray *opts, const char *field, const mxArray **f);
+/* any real numeric scalar as a double, NaN, Inf and fractions included: for values that are a
+ * double in C too. Never cast its result to an integer type: use dp_opt_int(). */
 int dp_opt_number(const mxArray *opts, const char *field, double dflt, double *out);
+/* a real, integer-valued numeric scalar in [lo, hi], else -EINVAL (NaN, Inf, 2.5, 1e300, out of
+ * range; *out untouched). int64 / uint64 are read exactly. dflt is returned as it is. THE way
+ * from an option to a C integer: samples, nb_blocks, buffer, timeout_ms. */
+int dp_opt_int(const mxArray *opts, const char *field, long long lo, long long hi, long long dflt, long long *out);
 int dp_opt_bool(const mxArray *opts, const char *field, bool dflt, bool *out);
 int dp_opt_string(const mxArray *opts, const char *field, const char *dflt, char *out, size_t len);
 /* reads the fields class, complex, scale, raw; sets layout COLUMNS, saturate true, no gains. cls may be NULL. */
@@ -741,7 +756,7 @@ int dp_opt_gains(const mxArray *opts, unsigned int nb_chans, struct iio_conv_spe
 		double **gain, double **offset);
 ```
 
-As implemented by Task 9 (the header's comments are the authority): `opts` may also be `NULL` (an argument beyond `nrhs`) and then means `[]`; every `dp_opt_*` function returns `-EINVAL` for an `opts` that is neither (a struct array, an empty struct, a number, a cell); a field that is missing **or holds `[]`** takes its default. `dp_opt_number` takes a real full scalar of the ten numeric classes (not logical, not char), `dp_opt_bool` a logical scalar only, `dp_opt_string` a char row or 2-D empty char that fits `len` and has no embedded NUL. `dp_opt_spec` does not judge field combinations (a scale with an integer class, `raw` with `'iio'`): `iio_conv_create` / `iio_conv_stream_open` do. `dp_per_channel` also returns `-EINVAL` for `nb_chans == 0` and for an odd `nb_chans` with `is_complex`; on any error `*out` is `NULL`, and `dp_opt_gains` leaves all four pointers `NULL` with nothing allocated. Output pointers `type`, `cls`, `is_complex` of the class functions and of `dp_check_matrix` may be `NULL`. The header also exports the helpers these are built from: `dp_is_absent(a)` (`NULL` or `[]`), `dp_opt_field(opts, field, &f)` (the field's array, `NULL` when it takes its default; for fields that are not a number, a logical or text, such as `channels`) and `dp_classes()` (the table of `DP_NB_CLASSES` = 10 `struct dp_class { name, type, cls }`). `dp_add_*` with parent `0` would create a root (`gw_handle_add`): callers pass the id they resolved with `gw_arg_handle`.
+As implemented by Task 9 (the header's comments are the authority): `opts` may also be `NULL` (an argument beyond `nrhs`) and then means `[]`; every `dp_opt_*` function returns `-EINVAL` for an `opts` that is neither (a struct array, an empty struct, a number, a cell); a field that is missing **or holds an empty double matrix** (`dp_is_unset()`: `[]`, `double.empty(1,0)`, `zeros(0,1)`, 0-by-3; not a 0x0x0 double, not a sparse `[]`, not an empty array of another class) takes its default. That rule is wider than the one for arguments (`dp_is_absent()`, "Conventions": only `[]`) because the M classes declare `double.empty(1,0)` as the default of `Gain`, `Offset` and `Samples` and pass the value on unchanged, and a user's `Gain=zeros(1,0)` arrives the same way; the options argument itself is still `[]` or a scalar struct and nothing else (a 1-by-0 double as `opts` is `-EINVAL`). `dp_opt_number` takes a real full scalar of the ten numeric classes (not logical, not char) and returns it as a `double`, NaN, Inf and fractions included; `dp_opt_int` takes the same and returns `-EINVAL` unless the value is finite, integer-valued and in `[lo, hi]` (`int64` / `uint64` are read from the integer data). **Every option that becomes a C integer (`samples`, `nb_blocks`, `buffer`, `timeout_ms`) is read with `dp_opt_int`**: a cast of the `double` from `dp_opt_number` is undefined behaviour for NaN and 1e300, and the sanitizers of the mock tests do not report it. `dp_opt_bool` takes a logical scalar only, `dp_opt_string` a char row or 2-D empty char that fits `len` (nothing fits a `len` of 0) and holds no NUL character anywhere (the characters are scanned: after a non-ASCII character a byte count would miss it). `dp_opt_spec` does not judge field combinations (a scale with an integer class, `raw` with `'iio'`): `iio_conv_create` / `iio_conv_stream_open` do. `dp_per_channel` also returns `-EINVAL` for `nb_chans == 0` and for an odd `nb_chans` with `is_complex`; on any error `*out` is `NULL`, and `dp_opt_gains` leaves all four pointers `NULL` with nothing allocated. Output pointers `type`, `cls`, `is_complex` of the class functions and of `dp_check_matrix` may be `NULL`. The header also exports the helpers these are built from: `dp_is_absent(a)` (`NULL` or `[]`), `dp_is_unset(a)` (`NULL` or an empty double matrix), `dp_opt_field(opts, field, &f)` (the field's array, `NULL` when it takes its default; for fields that are not a number, a logical or text, such as `channels`: a 1-by-0 `uint64` is a value there and the caller reads it as "no ids") and `dp_classes()` (the table of `DP_NB_CLASSES` = 10 `struct dp_class { name, type, cls }`). `dp_add_*` checks the type of the parent entry (`GW_T_DEVICE` for a mask, `GW_T_BUFFER` for a buffer stream, `GW_T_BUFFER_STREAM` for a block) and returns 0 for any other parent, for a stale one and for `0`: under a wrong parent the object would be destroyed in the wrong order (a block after its buffer stream: use after free in `iio_block_destroy`), under `0` it would be a root that outlives its context. A caller treats that 0 like any other: it destroys the object and returns `-ENOMEM` (it cannot happen after `gw_arg_handle` resolved the parent with its type).
 
 ### `tests/mex/dp_test.h` (Task 9; header only, `static inline`)
 
@@ -756,7 +771,9 @@ As implemented by Task 9 (the header's comments are the authority): `opts` may a
 #include "fake_backend.h"
 
 gw_id dp_open_fake(const char *xml_path);          /* fake_reset(); fake_create_context(xml_path) as an owned GW_T_CONTEXT
-                                                      root whose destroy op is iio_context_destroy */
+                                                      root whose destroy op is iio_context_destroy. One at a time: while an
+                                                      earlier fake context is alive it counts a test failure and returns 0,
+                                                      without a reset (test_create_fake_context: iio:EBUSY) */
 gw_id dp_dev(gw_id ctx, const char *name);         /* iio_context_find_device; borrowed child of ctx */
 gw_id dp_chn(gw_id dev, const char *id, bool output);
 gw_id dp_buf(gw_id dev, unsigned int index);
@@ -956,7 +973,7 @@ void fixture_cleanup(const char *dir);           /* removes every regular file i
 
 ### `tests/fake_backend.h` (Task 2a)
 
-A test-only libiio backend (operations `static`, the three helpers `static inline`; include it in exactly one translation unit per program). It fills `struct iio_backend_ops` of `deps/install/include/iio/iio-backend.h` (the private types `struct iio_buffer_pdata`, `struct iio_block_pdata`, `struct iio_event_stream_pdata` are defined in this header) and a `struct iio_backend` with `.api_version = IIO_BACKEND_API_V1, .name = "fake", .uri_prefix = "fake:", .default_timeout_ms = 100`. Structure comes from the fixture XML: `fake_create_context(path)` is `iio_create_context_from_xml(&params, "xml:<path>", &fake_backend, "(fake)", NULL, NULL, 0)` with a zeroed `params`; the result has name `fake`, description `Emulated fixture & test context (fake)`, 8 devices and 4 context attributes **[RUN]**. Behaviour:
+A test-only libiio backend (operations `static`, the three helpers `static inline`; include it in exactly one translation unit per program). It fills `struct iio_backend_ops` of `deps/install/include/iio/iio-backend.h` (the private types `struct iio_buffer_pdata`, `struct iio_block_pdata`, `struct iio_event_stream_pdata` are defined in this header) and a `struct iio_backend` with `.api_version = IIO_BACKEND_API_V1, .name = "fake", .uri_prefix = "fake:", .default_timeout_ms = 1000`. Structure comes from the fixture XML: `fake_create_context(path)` is `iio_create_context_from_xml(&params, "xml:<path>", &fake_backend, "(fake)", NULL, NULL, 0)` with a zeroed `params`; the result has name `fake`, description `Emulated fixture & test context (fake)`, 8 devices and 4 context attributes **[RUN]**. Behaviour:
 
 ```c
 #define FAKE_NO_TIMEOUT (-12345)
@@ -996,7 +1013,7 @@ struct iio_context *fake_create_context(const char *xml_path);   /* or a pointer
 | `set_timeout` | — | records the value in `timeout`, returns 0 |
 | `ping` | — | returns 0 |
 
-`iio_buffer_close()` itself calls the cancel operation, so a correct stream-layer close logs `X s F.. X C`. Verified **[RUN]**: a 47000-byte `iio_attr_write_raw` arrives with its full length; `iio_context_set_timeout(ctx, -1)` reaches `set_timeout` as -1; `iio_device_get_trigger` gives `-ENODEV` before a trigger is set (as libiio's local backend does); a second fake context can be created after the first was destroyed; a missing XML file gives `-EINVAL`.
+`iio_buffer_close()` itself calls the cancel operation, so a correct stream-layer close logs `X s F.. X C`. (The file as Task 2a committed it had neither `timeout`, `attr_data`, `attr_len`, `FAKE_NO_TIMEOUT` nor the operations `read_attr`, `write_attr`, `set_timeout`, `ping`, and `tests/test_stream_fake.c` had no `backend_misc` case; both were added with the review of Task 9. `read_attr` returns `-ENOSPC` when the text does not fit.) Verified **[RUN]**, and now by `test_backend_misc` of `tests/test_stream_fake.c`: a 47000-byte `iio_attr_write_raw` arrives with its full length; `iio_context_set_timeout(ctx, -1)` reaches `set_timeout` as -1; `iio_device_get_trigger` gives `-ENODEV` before a trigger is set (as libiio's local backend does); a second fake context can be created after the first was destroyed; a missing XML file gives `-EINVAL`.
 
 ## Command reference
 
@@ -1136,7 +1153,7 @@ Every returned id is a borrowed child of the device's context.
 | `block_read` | 2 | 1 | blk, opts | N-by-C numeric | X (`iio_conv_read`) |
 | `block_write` | 3 | 1 | blk, data, opts | n samples written = min(rows, capacity); 0, without calling the converter, for zero rows | X (`iio_conv_write`) |
 
-`off0` is a 0-based byte offset. `opts` is `[]` or a scalar struct; an unknown field is `iio:EINVAL`. `block_read` fields: `channels` (`uint64` ids; empty = every scan element enabled in the stream's mask, device order), `class`, `complex`, `scale`, `raw`, `gain`, `offset` (as in `conv_stream_open` below), `samples` (empty = capacity); N = min(samples, floor(block_size / step)). `block_write` fields: `channels`, `complex`, `scale`, `raw`, `gain`, `offset`; the class comes from `data`; `complex` absent means `mxIsComplex(data)`. `complex` true with real `data` (MATLAB hands a complex array whose imaginary part is all zero to the MEX as a real array): one column per I/Q pair, the Q channels are written as zero. `complex` false with complex `data` is `iio:EINVAL`. A wrong column count is `iio:EINVAL`.
+`off0` is a 0-based byte offset. `opts` is `[]` or a scalar struct; an unknown field is `iio:EINVAL`. `block_read` fields: `channels` (`uint64` ids; empty = every scan element enabled in the stream's mask, device order), `class`, `complex`, `scale`, `raw`, `gain`, `offset` (as in `conv_stream_open` below), `samples` (not given = capacity; else an integer ≥ 1, read with `dp_opt_int`: 0, 2.5, NaN, Inf and 1e300 are `iio:EINVAL`); N = min(samples, floor(block_size / step)). In every options struct a field that holds an empty double matrix (`[]`, `double.empty(1,0)`) counts as not given (`dp_is_unset()` of `data_path.h`), so M code passes its `double.empty(1,0)` defaults on unchanged. `block_write` fields: `channels`, `complex`, `scale`, `raw`, `gain`, `offset`; the class comes from `data`; `complex` absent means `mxIsComplex(data)`. `complex` true with real `data` (MATLAB hands a complex array whose imaginary part is all zero to the MEX as a real array): one column per I/Q pair, the Q channels are written as zero. `complex` false with complex `data` is `iio:EINVAL`. A wrong column count is `iio:EINVAL`.
 
 #### Group `stream` (`cmd_stream.c`, Task 18)
 
@@ -1183,7 +1200,7 @@ Channel check: at the pinned commit `iio_event_get_channel` returns the device's
 | `conv_stream_flush` | 1 | 1 | cs | tf | X: `iio_conv_stream_flush` |
 | `conv_stream_close` | 1 | 0 | id | — | X: `iio_conv_stream_close` |
 
-`conv_stream_open`: `chans` is a 1-by-N cell of channel ids as char (looked up with `iio_device_find_channel(dev, id, opts.output)`; an unknown id is `iio:ENOENT` and the message names it) or a `uint64` vector of channel handle ids. The parent of the new handle is the borrowed id of the buffer. `opts` is a scalar struct; a missing field takes its default, an unknown field is `iio:EINVAL`:
+`conv_stream_open`: `chans` is a 1-by-N cell of channel ids as char (looked up with `iio_device_find_channel(dev, id, opts.output)`; an unknown id is `iio:ENOENT` and the message names it) or a `uint64` vector of channel handle ids. The parent of the new handle is the borrowed id of the buffer. `opts` is a scalar struct; a missing field, and one that holds an empty double matrix (`[]`, `double.empty(1,0)`: `dp_is_unset()`), takes its default (a required one is then missing: `iio:EINVAL`); an unknown field is `iio:EINVAL`. The integer fields `buffer`, `samples`, `nb_blocks`, `timeout_ms` are read with `dp_opt_int` (a real integer-valued scalar in the field's range; NaN, Inf, 2.5, 1e300 are `iio:EINVAL`), never by a cast of a `double`:
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -1467,6 +1484,7 @@ classdef Block < iio.internal.Object
         %   opts.OutputDataType (1,1) string = "double"
         %   opts.Complex (1,1) logical = false, opts.Scale (1,1) string = "none", opts.Raw (1,1) logical = false
         %   opts.Gain = double.empty(1,0), opts.Offset = double.empty(1,0), opts.Samples = double.empty(1,0)
+        %   (passed to the gateway as they are: an empty double field is "not given" there)
         n = write(obj, data, opts)
         %   opts.Channels, opts.Scale, opts.Raw, opts.Gain, opts.Offset as above
         %   opts.Complex (1,1) logical = ~isreal(data);  passed to block_write as the field complex (real data
@@ -1560,7 +1578,7 @@ classdef TxStream < iio.internal.Object                    % the same properties
 end
 ```
 
-Constructor body: the channel list is `iio.internal.Object.handles(channels)` for an `iio.Channel` array, else `cellstr(channels)`; `iio_mex('conv_stream_open', dev.Handle, ch, s)` with `s` built by one `struct(...)` call of scalar fields (`'output'`, `'samples'`, `'class', char(opts.OutputDataType)`, ...). The toolbox parity configuration is `OutputDataType="int16", Complex=true, Raw=true`. The `arguments` block of `RxStream` above is literal.
+Constructor body: the channel list is `iio.internal.Object.handles(channels)` for an `iio.Channel` array, else `cellstr(channels)`; `iio_mex('conv_stream_open', dev.Handle, ch, s)` with `s` built by one `struct(...)` call of scalar fields (`'output'`, `'samples'`, `'class', char(opts.OutputDataType)`, ...); `'gain', opts.Gain` and `'offset', opts.Offset` go in as they are (the default `double.empty(1,0)` is "not given" at the gateway, as `[]` is: no `isempty` branch in M code). The toolbox parity configuration is `OutputDataType="int16", Complex=true, Raw=true`. The `arguments` block of `RxStream` above is literal.
 
 ### Test support (`matlab/tests/`, Task 8)
 
@@ -2974,7 +2992,10 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
     `(k-2048) + (2047-k)i`; no byte equals the mock's uninitialised-memory pattern.
     `class 'double', scale 'fullscale', complex true` → first element `-1 + 0.99951171875i`.
     `raw true, class 'int16', complex true` → `2048+2047i`, `6145+2046i`. `samples 3` → 3×1;
-    `samples 100` → 8×1. `channels [voltage0_q]`, int16 → 8×1 real `2047 .. 2040`. `[]` opts → 8×2
+    `samples 100` → 8×1. `samples` is read with `dp_opt_int(opts, "samples", 1, LLONG_MAX, 0, &n)` (0 = not given):
+    `samples 0`, `2.5`, `NaN`, `Inf`, `1e300`, `-1` → `iio:EINVAL` each;
+    `struct(samples 1×0 double, gain 1×0 double, offset 1×0 double)` (the defaults `iio.Block.read` passes) → 8×2
+    double as with `[]`; `block_write(blk, data, struct(gain 1×0 double, offset 1×0 double))` → as with `[]`. `channels [voltage0_q]`, int16 → 8×1 real `2047 .. 2040`. `[]` opts → 8×2
     double, column 1 `-2048 ..`, column 2 `2047 ..`. `complex true` with `channels [voltage0_q]` →
     `iio:EINVAL`; `class 'int16', scale 'fullscale'` → `iio:EINVAL`; `class 'int12'` → `iio:EINVAL`;
     a field `colour` → `iio:EINVAL`; a channel of tx → `iio:EINVAL`.
@@ -3199,6 +3220,8 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
     `gain [2 3]` → (1,1) `-4094+4092i`, (1,2) `-6144+6141i`; `gain [1 2 3]` → `iio:EINVAL`;
     `class 'int16', gain 2` → `iio:EINVAL`.
   - `rx_errors`: `class 'int12'`, `scale 'full'`, a field `colour`, `samples 0`, `nb_blocks 0`,
+    each of `samples`, `nb_blocks`, `buffer`, `timeout_ms` as `NaN`, `Inf`, `2.5` and `1e300`, `buffer -2`,
+    `timeout_ms -2`, `nb_blocks 2^32`, `samples` as a 1×0 double (not given, and it is required),
     missing `samples`, missing `output`, `complex true` with 3 channels, `cyclic true`, `buffer 3`,
     `output true` with handles of input channels → `iio:EINVAL`; id `'voltage9'` → `iio:ENOENT` and
     `mock_err_msg()` contains `voltage9`; `iio:device4` `{'rot_quaternion'}` → `iio:ENOTSUP`; an `xml`
@@ -3247,7 +3270,7 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
   with `mxCreateUninitNumericMatrix(samples, columns, dp_class_of_type(iio_conv_stream_get_type(s)), complex ? mxCOMPLEX : mxREAL)`,
   store it in `c->plhs[0]` at once (the dispatcher destroys `plhs` on failure), call
   `iio_conv_stream_read(s, mxGetData(out))`, on "no frame" `memset` the output to 0, on error return
-  it through `gw_fail`. `conv_stream_open`: gains with `mxMalloc`, freed with `mxFree` on every return path. `conv_stream_write` reads
+  it through `gw_fail`. `conv_stream_open`: the integer options with `dp_opt_int` (`samples` 1 .. `LLONG_MAX` with default 0 = missing (the stream layer judges the size), `nb_blocks` 1 .. `UINT_MAX` default 2, `buffer` -1 .. `UINT_MAX` default -1, `timeout_ms` -1 .. `INT_MAX` default -1; never a cast of the `double` of `dp_opt_number`); a successful open with `struct(.., gain 1×0 double, offset 1×0 double)` (what `iio.RxStream` passes by default) is part of the `rx` test; gains with `mxMalloc`, freed with `mxFree` on every return path. `conv_stream_write` reads
   `mxGetData(prhs)` in place.
 - [ ] **Step 6:** Run G1 for `test_cmd_conv`. Expected: PASS, no sanitizer report, < 10 s.
   `grep -c mxCreateUninitNumericMatrix matlab/mex/cmd_conv.c` → `1`.

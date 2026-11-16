@@ -9,6 +9,7 @@
 #include "mx_util.h"
 #include <iio/iio-conv.h>
 
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -83,11 +84,17 @@ static inline void dp_block_destroy_op(void *ptr, void *aux)
  * parent; destroy op iio_channels_mask_destroy / iio_buffer_close / iio_block_destroy. The buffer
  * stream also gets a pre_destroy op: iio_buffer_stream_cancel(), then iio_buffer_stream_stop() if
  * gw_handle_flags(gw_handle_find(GW_T_BUFFER_STREAM, bs)) has BS_STARTED. Returns 0
- * when the table cannot take it (the caller then destroys the object and returns -ENOMEM). */
+ * when the table cannot take it (the caller then destroys the object and returns -ENOMEM).
+ * The parent must be a live GW_T_DEVICE (mask), GW_T_BUFFER (buffer stream) or
+ * GW_T_BUFFER_STREAM (block) entry, else 0 too: under any other parent the object would be
+ * destroyed in the wrong order (a block after its buffer stream is a use after free), and
+ * under parent 0 it would be a root that outlives its context. */
 static inline gw_id dp_add_mask(struct iio_channels_mask *mask, gw_id dev)
 {
 	static const struct gw_ops ops = { NULL, dp_mask_destroy_op };
 
+	if (gw_handle_type(dev) != GW_T_DEVICE)
+		return 0;
 	return gw_handle_add(GW_T_MASK, mask, dev, true, &ops, NULL);
 }
 
@@ -95,6 +102,8 @@ static inline gw_id dp_add_bufstream(struct iio_buffer_stream *bs, gw_id buf)
 {
 	static const struct gw_ops ops = { dp_bufstream_pre_destroy_op, dp_bufstream_destroy_op };
 
+	if (gw_handle_type(buf) != GW_T_BUFFER)
+		return 0;
 	return gw_handle_add(GW_T_BUFFER_STREAM, bs, buf, true, &ops, NULL);
 }
 
@@ -102,6 +111,8 @@ static inline gw_id dp_add_block(struct iio_block *blk, gw_id bs)
 {
 	static const struct gw_ops ops = { NULL, dp_block_destroy_op };
 
+	if (gw_handle_type(bs) != GW_T_BUFFER_STREAM)
+		return 0;
 	return gw_handle_add(GW_T_BLOCK, blk, bs, true, &ops, NULL);
 }
 
@@ -194,14 +205,25 @@ static inline int dp_scale_from_name(const char *name, enum iio_conv_scale *scal
 
 /* ------------------------------------------------------------------ arrays */
 
-/* "Absent": no array, or [] (0x0 double, as gw_arg_given() defines it). */
+/* "Absent", for an ARGUMENT (the options argument itself): no array, or [] (0x0 double, as
+ * gw_arg_given() defines it). A 1x0 or 0x3 double, a 0x0x0 double, a sparse [] are not absent. */
 static inline bool dp_is_absent(const mxArray *a)
 {
 	return !a || (mxGetClassID(a) == mxDOUBLE_CLASS && !mxIsSparse(a) &&
 		mxGetNumberOfDimensions(a) == 2 && mxGetM(a) == 0 && mxGetN(a) == 0);
 }
 
-/* a: [] (then *out = NULL), a real double scalar, or a real double vector with one entry per output
+/* "Not given", for an option value: no array, or a full 2-D double without elements ([], and
+ * also 1x0, 0x1, 0x3: MATLAB code writes double.empty(1,0) and zeros(1,0) for "none"). Wider than
+ * dp_is_absent() on purpose; an N-D, a sparse or a non-double empty array is a value. */
+static inline bool dp_is_unset(const mxArray *a)
+{
+	return !a || (mxGetClassID(a) == mxDOUBLE_CLASS && !mxIsSparse(a) &&
+		mxGetNumberOfDimensions(a) == 2 && mxGetNumberOfElements(a) == 0);
+}
+
+/* a: not given (dp_is_unset(): [] or another empty double matrix; then *out = NULL and nothing
+ * else is checked), a real double scalar, or a real double vector with one entry per output
  * column. *out gets nb_chans entries (mxMalloc, the caller mxFree()s it: per-call scratch; the
  * converter and the stream layer copy the values; a complex pair gets its column's value twice).
  * -EINVAL (and *out = NULL) for anything else, for nb_chans of 0 and for an odd nb_chans with
@@ -214,7 +236,7 @@ static inline int dp_per_channel(const mxArray *a, unsigned int nb_chans, bool i
 	size_t n;
 
 	*out = NULL;
-	if (dp_is_absent(a))
+	if (dp_is_unset(a))
 		return 0;
 	if (mxGetClassID(a) != mxDOUBLE_CLASS || mxIsSparse(a) || mxIsComplex(a) ||
 	    mxGetNumberOfDimensions(a) != 2 || (mxGetM(a) != 1 && mxGetN(a) != 1))
@@ -254,7 +276,9 @@ static inline int dp_check_matrix(const mxArray *a, enum iio_conv_type *type, bo
 /* ------------------------------------------------------------------ options
  * Options are ONE scalar struct argument; [] (or an argument that was not given: NULL) means
  * "no options". Anything else (a struct array, an empty struct, a number, a cell) is -EINVAL
- * from every function below. A field that is missing or holds [] takes its default. */
+ * from every function below. A field that is missing or holds an empty double matrix
+ * (dp_is_unset(): [], double.empty(1,0), zeros(0,1)) takes its default: the M classes declare
+ * double.empty(1,0) as the default of Gain, Offset and Samples and pass it on unchanged. */
 
 /* *f = the value of the field, or NULL when it takes its default. */
 static inline int dp_opt_field(const mxArray *opts, const char *field, const mxArray **f)
@@ -267,7 +291,7 @@ static inline int dp_opt_field(const mxArray *opts, const char *field, const mxA
 	if (!mxIsStruct(opts) || !mxIsScalar(opts))
 		return -EINVAL;
 	v = mxGetField(opts, 0, field);
-	if (!dp_is_absent(v))
+	if (!dp_is_unset(v))
 		*f = v;
 	return 0;
 }
@@ -302,7 +326,9 @@ static inline int dp_opt_check(const mxArray *opts, const char *const *allowed, 
 	return 0;
 }
 
-/* A real, full scalar of one of the ten numeric classes (not logical, not char), as a double. */
+/* A real, full scalar of one of the ten numeric classes (not logical, not char), as a double:
+ * NaN, Inf and fractions included, and an int64 / uint64 rounded to a double. For a value that
+ * is a double in C too (a frequency, a gain); for a count or an index use dp_opt_int(). */
 static inline int dp_opt_number(const mxArray *opts, const char *field, double dflt, double *out)
 {
 	const mxArray *f;
@@ -317,6 +343,51 @@ static inline int dp_opt_number(const mxArray *opts, const char *field, double d
 	if (!mxIsNumeric(f) || mxIsSparse(f) || mxIsComplex(f) || !mxIsScalar(f) || !mxGetData(f))
 		return -EINVAL;
 	*out = mxGetScalar(f);
+	return 0;
+}
+
+/* A real, full, integer-valued scalar of one of the ten numeric classes in [lo, hi], else -EINVAL
+ * (and *out untouched): NaN, Inf, a fraction, a value outside the range. int64 and uint64 are read
+ * from the integer data, never through double. dflt is returned as it is (it may lie outside the
+ * range, as a marker for "not given"). THE way from an option to a C integer (samples, nb_blocks,
+ * buffer, timeout_ms): converting a double that dp_opt_number() returned is undefined behaviour
+ * for NaN and for 1e300, and no sanitizer of the mock tests reports it. */
+static inline int dp_opt_int(const mxArray *opts, const char *field, long long lo, long long hi,
+		long long dflt, long long *out)
+{
+	const mxArray *f;
+	int ret = dp_opt_field(opts, field, &f);
+	long long v;
+
+	if (ret)
+		return ret;
+	if (!f) {
+		*out = dflt;
+		return 0;
+	}
+	if (!mxIsNumeric(f) || mxIsSparse(f) || mxIsComplex(f) || !mxIsScalar(f) || !mxGetData(f))
+		return -EINVAL;
+	if (mxGetClassID(f) == mxINT64_CLASS) {
+		v = *(const int64_t *)mxGetData(f);
+	} else if (mxGetClassID(f) == mxUINT64_CLASS) {
+		uint64_t u = *(const uint64_t *)mxGetData(f);
+
+		if (u > (uint64_t)LLONG_MAX)
+			return -EINVAL;
+		v = (long long)u;
+	} else {
+		double d = mxGetScalar(f);
+
+		/* -2^63 <= d < 2^63 (false for NaN), so that the conversion is defined */
+		if (!(d >= -9223372036854775808.0 && d < 9223372036854775808.0))
+			return -EINVAL;
+		v = (long long)d;
+		if ((double)v != d)
+			return -EINVAL;
+	}
+	if (v < lo || v > hi)
+		return -EINVAL;
+	*out = v;
 	return 0;
 }
 
@@ -339,12 +410,14 @@ static inline int dp_opt_bool(const mxArray *opts, const char *field, bool dflt,
 }
 
 /* Text (a char row or a 2-D empty char) as UTF-8 in out, which holds len bytes; -EINVAL when it
- * does not fit (the default too) or has an embedded NUL. dflt may be NULL ("" then). */
+ * does not fit (the default too; nothing fits a len of 0, and out is then not written) or holds
+ * a NUL character anywhere. dflt may be NULL ("" then). */
 static inline int dp_opt_string(const mxArray *opts, const char *field, const char *dflt, char *out, size_t len)
 {
 	const mxArray *f;
 	int ret = dp_opt_field(opts, field, &f);
-	size_t n;
+	const mxChar *w;
+	size_t n, nc;
 	char *s;
 
 	if (ret)
@@ -363,12 +436,19 @@ static inline int dp_opt_string(const mxArray *opts, const char *field, const ch
 	if (!mxIsChar(f) || mxGetNumberOfDimensions(f) != 2 ||
 	    (mxGetM(f) != 1 && mxGetNumberOfElements(f) != 0))
 		return -EINVAL;
+	/* a NUL would end the C string early: 'iio' followed by NUL and more is not 'iio'. Looked for
+	 * in the characters, not in the byte count of the UTF-8 text (non-ASCII characters before
+	 * the NUL make that count up) */
+	nc = mxGetNumberOfElements(f);
+	w = mxGetData(f);
+	for (size_t i = 0; i < nc; i++)
+		if (!w || w[i] == 0)
+			return -EINVAL;
 	s = mxArrayToUTF8String(f);
 	if (!s)
 		return -EINVAL;
 	n = strlen(s);
-	/* every character gives at least one byte: fewer bytes means a NUL inside */
-	if (n >= len || n < mxGetNumberOfElements(f)) {
+	if (n >= len) {
 		mxFree(s);
 		return -EINVAL;
 	}
