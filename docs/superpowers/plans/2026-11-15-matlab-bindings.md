@@ -29,7 +29,7 @@ MEX build
 - `IIO_CONV_BUILD_MATLAB=ON` is never combined with `IIO_CONV_SANITIZE=ON`; the mock tests are sanitized by `IIO_CONV_MEX_SANITIZE` (default ON) in the same build directory.
 - Gateway C code may call only the `mx*`/`mex*` functions declared in `tests/mxmock/matrix.h` and `tests/mxmock/mex.h`. Needing another one means adding it to the mock, to `tests/mex/mx_conformance.c` and to `tests/mex/test_mxmock.c` in the same commit (wave 0 only; a wave 1 task that needs one stops and reports). No typed accessors (`mxGetDoubles` ...), no `mxGetPr`, no `printf` (a macro for `mexPrintf` under `mex.h`; for the same reason write `format(__printf__, ...)`), no `__attribute__((cleanup))`.
 - Error discipline: a command function returns 0 or a negative errno and never calls `mexErrMsgIdAndTxt`; it frees what it allocated, and every libiio object it created is in the handle table, or destroyed, before it returns or calls any `mx*` function that can fail. The dispatcher raises exactly once, last, with nothing held.
-- Out of memory (every `mxCreate*`, `mxMalloc`, `mxArrayToUTF8String` can end the call non-locally): **result first**: a command that creates an owned libiio object calls `gw_ret_id(c, 0, 0)` before it creates the object, registers the object, then stores the id with `gw_set_id()`; no mx allocation follows the creation, so no object can exist whose id MATLAB never received. The same rule keeps the lock right: the dispatcher updates the lock only when a command returns, so a command that creates or destroys a root handle (`create_context`, `scan`, `test_create_fake_context`, and every destroy command) makes no mx allocation after the handle table changed; otherwise an allocation failure leaves the lock stale until the next gateway call returns (teardown stays ordered even then: the at-exit function calls `gw_handle_destroy_all()`). **Parking**: memory that libiio returns from `malloc` (`iio_context_get_xml`, `iio_attr_get_available`) is handed to `gw_park()` at once and never freed by the command (both helpers: `mx_util.h`). **Write, then count**: a command that changes the device and returns a value about that change (`attr_write_raw`, `attr_write_string`; in wave 1b any command that writes to a device or queues data and returns a count) creates its result first with `gw_ret_double(c, 0, 0)`, performs the write, and stores the value with `gw_set_double()`; otherwise a failed allocation of the count reports "out of memory" for a write that took effect, and a retry writes twice.
+- Out of memory (every `mxCreate*`, `mxMalloc`, `mxArrayToUTF8String` can end the call non-locally): **result first**: a command that creates an owned libiio object calls `gw_ret_id(c, 0, 0)` before it creates the object, registers the object, then stores the id with `gw_set_id()`; no mx allocation follows the creation, so no object can exist whose id MATLAB never received. The same rule keeps the lock right: the dispatcher updates the lock only when a command returns, so a command that creates or destroys a root handle (`create_context`, `scan`, `test_create_fake_context`, and every destroy command) makes no mx allocation after the handle table changed; otherwise an allocation failure leaves the lock stale until the next gateway call returns (teardown stays ordered even then: the at-exit function calls `gw_handle_destroy_all()`). **Parking**: memory that libiio returns from `malloc` (`iio_context_get_xml`, `iio_attr_get_available`) is handed to `gw_park()` at once and never freed by the command (both helpers: `mx_util.h`). **Write, then count**: a command that changes the device and returns a value about that change (`attr_write_raw`, `attr_write_string`; in wave 1b any command that writes to a device or queues data and returns a count) creates its result first with `gw_ret_double(c, 0, 0)`, performs the write, and stores the value with `gw_set_double()`; otherwise a failed allocation of the count reports "out of memory" for a write that took effect, and a retry writes twice. Wave 1b applied the same order to every command that consumes or moves something and then returns a value: `block_dequeue`, `stream_get_next_block`, `event_stream_read`, `conv_stream_read`, `conv_stream_flush`, `device_reg_read` create their results before the libiio call and fill them in afterwards (a logical through `mxGetLogicals`, an id through `gw_set_id`). The fake backend has no write counter: "exactly one" is asserted on its log (one more `D`, `E`, `O`, `B`) or on the content and length of `fake.attr_data`.
 - Per-call scratch memory is `mxMalloc`/`mxFree`; everything that outlives a call is `malloc`/`free`.
 - Numeric locale: the gateway never relies on the `LC_NUMERIC` of the MATLAB process and never changes it. A libiio call that parses or prints a floating-point number with the C library is bracketed by `gw_c_numeric_enter()` / `gw_c_numeric_leave()` (`mx_util.h`), with no `mx*` call and no `return` in between; the list of such calls is "Conventions / Gateway (C)", **Numeric locale**. No `cmd_<group>.c` file calls `setlocale`, `uselocale`, `newlocale` or `localeconv` itself.
 
@@ -54,7 +54,7 @@ Working rules
 - Disk (about 2 GB free; a wave 1 build directory is about 30 MB, a full `build-mex` with every sanitized test about 250 MB): one build directory per task, named in the task, removed (`rm -rf`) before the task reports done. Never use `build`, `build-asan`, `build-rel`; never touch `deps/`. Test files go to a `mkdtemp` directory that the test removes. The controller runs at most six wave 1 tasks at the same time.
 - Git, shared working tree and therefore ONE shared index: `git add <own paths>` (needed for new files), then always commit with a pathspec, `git commit -s -m "<message>" -- <own paths>` (a plain `git commit` would sweep in whatever another task has staged). Own paths = the files listed under the task's **Files**. Staged files of another task that `git status --short` shows are left alone. Never `git add -A`, `git commit -a`, `git stash`, `git checkout -- .`, `git reset --hard`, `git clean`. On an `index.lock` error wait 2 s and retry, at most 5 times. Implementers never push and never open pull requests.
 - A gate message that names only files of another task running in the same wave is not yours: put it in your report, do not edit the file.
-- emu traps: never dequeue a block of a buffer that is not started (5 s stall, then `-EBADF`); every `<buffer index>` of a fixture equals its position (else SIGSEGV); RX data comes verbatim from `<dir>/emu-rx_buf0.bin` whatever the mask (section "Test data"); always an absolute `emu:` path to a copy of the fixture in a temporary directory.
+- emu traps: never dequeue a block of a buffer that is not started (5 s stall, then `-EBADF`); every `<buffer index>` of a fixture equals its position (else SIGSEGV); RX data comes verbatim from `<dir>/emu-rx_buf0.bin` whatever the mask (section "Test data"); always an absolute `emu:` path to a copy of the fixture in a temporary directory; a second stream on a buffer that already has one opens without `-EBUSY`; an input buffer opens only if its data file exists (`-ENOENT` for buffer 0 of `emu-multi`: the fixture writes only `emu-rx_buf0.bin`); a huge block size is a failed `malloc`.
 - No test may take 4 s or more (CTest `TIMEOUT 30`; `check_junit.py --max-seconds 4` in CI). A slow test is a bug, usually the emu stall. The only exemption is the two lint tests `mex_mlint` and `mex_mlint_r2023b` (`TIMEOUT 120`): the `mlint` of R2023b needs about 0.7 s to start and 0.12 s per file (3.2 s for the 22 files of Task 8a), so they grow with the number of `.m` files.
 
 ## Review Focus
@@ -80,7 +80,7 @@ Failure modes that cross task boundaries. Each names the tasks that hold the tes
 17. **`''` versus `[]` versus an error**: a device without name or label, a context attribute whose value is `""`, an attribute without a value (`-ENOENT`), a `find_*` that finds nothing: exactly as "Conventions" says. Tasks 12, 13, 14, 15.
 18. **A converter that outlives its assumptions**: a converter cached for a buffer stream must not survive a change of a channel's data format (`Block.read` cache key, Task 17); output arrays of `conv_stream_read` and `block_read` are created once with `mxCreateUninitNumericMatrix` and every byte is written before return, also when `valid` is false (Tasks 17, 21: the mock fills uninitialised arrays with `0xA5`).
 19. **A dequeue that timed out on libiio's generic block path** leaves the block dequeued; the next read gets `-EPERM`. `iio_conv_stream_read` must then queue the block again and report "no frame", not fail for ever. Not reproducible with `emu:` or the fake: reviewed by reading `src/stream.c` (Task 2b). The low-level `block_dequeue` clears `BLK_ENQUEUED` when libiio answers `-EPERM` (Task 17).
-20. **A destructor that blocks.** `delete`, `clear all`, `iio.internal.shutdown()`, context destroy and MATLAB exit all run destroy ops, and a MEX call cannot be interrupted. No destroy op may wait without bound: the close drain of a transmit stream and the destroy of an output `iio_stream` are bounded when the context timeout is infinite; a started buffer stream is cancelled and stopped before it is closed. emu and the fake never block: asserted on the fake log and by time limits (Tasks 3, 9, 16, 18, 21).
+20. **A destructor that blocks.** `delete`, `clear all`, `iio.internal.shutdown()`, context destroy and MATLAB exit all run destroy ops, and a MEX call cannot be interrupted. No destroy op may wait without bound: the close drain of a transmit stream (bounded by the gateway's destroy op in `cmd_conv.c`, not by `iio_conv_stream_close`) and the destroy of an output `iio_stream` are bounded when the context timeout is infinite; a started buffer stream is cancelled and stopped before it is closed. emu and the fake never block: asserted on the fake log and by time limits (Tasks 3, 9, 16, 18, 21).
 21. **An error-encoded pointer taken for an object.** Eight libiio functions return `iio_ptr(err)`, not `NULL`, on failure ("Type mapping"). Registering such a pointer gives a live-looking id whose first use dereferences `(void *)-110`. Tasks 16, 17, 18 (a failed `next`), 19, 20.
 22. **The numeric locale of the MATLAB process.** libiio parses channel scales (`strtof`), ranges (`sscanf("%lf")`) and prints scales (`"%f"`) with the plain C functions. Under an `LC_NUMERIC` with a decimal comma, and without the gateway's guard, a context made from XML has scale 0 on every scaled channel with no error, `context_get_xml` says `scale="0,250000"`, `attr_get_range` of a fractional range is `iio:ENOTSUP`, and emu refuses a fractional write to an attribute with an `_available` range (all four measured **[RUN]** under `en_DK.UTF-8`, the first on `xml:`; `ip:`, `usb:`, `serial:` and the fake backend build their contexts with the same XML parser). Whether a MATLAB process can have such an `LC_NUMERIC` could not be established, so the gateway does not depend on it: rule **Numeric locale** of "Conventions / Gateway (C)". Tested on the mock under a real decimal-comma locale (`mt_comma_begin`, "How tests are written"): Tasks 6 (`gw_c_numeric_*`), 10, 11, 12, 13, and once more for every group in Task 22.
 
@@ -207,8 +207,9 @@ Failure modes that cross task boundaries. Each names the tasks that hold the tes
   | `iio_context_get_xml` | channel scales are printed with `"%f"` (`channel.c`) | `context_get_xml` (12, done) |
   | `iio_attr_get_range` | `sscanf("%lf")` (`attr.c`) | `attr_get_range` (13, done) |
   | `iio_attr_write_raw`, `iio_attr_write_string`, `iio_attr_write_bool`, `iio_attr_write_longlong`, `iio_attr_write_double` | emu checks a written value against the `_available` range with `sscanf("%lf")` (`emu.c`) | the five `attr_write_*` commands (13, done) |
+  | `iio_device_reg_read`, `iio_device_reg_write` | without backend register operations (or when they answer `-ENOSYS`) `device.c` falls back to `iio_attr_write_string` / `iio_attr_write_longlong` on the debug attribute `direct_reg_access`, both rows above. Not reached with emu (it has register operations); on the fake the fallback runs but parses nothing, so the comma-locale block of `test_cmd_lowlevel.c` can only assert a correct round trip and a restored locale | `device_reg_read`, `device_reg_write` (20, done) |
 
-  Not needed, because libiio switches the locale itself or parses no floating-point text: `iio_attr_read_double`, `iio_attr_read_bool`, `iio_attr_read_longlong`, `iio_attr_read_raw`, `iio_attr_get_available`, every channel, mask, buffer, block, stream, event and low-level function (`iio_channel_convert*` use the scale as a number; `iio_channel_get_data_format` returns what context creation parsed). A wave 1b task whose command calls a libiio function that is not in either list checks the function's source for the four patterns above, brackets the call if one is reached, and reports it. Test helpers that call libiio directly (`mt_open_context`, `dp_open_fake`, the `dp_*` builders, `fixture_*`) have no guard: inside a `mt_comma_begin()` block a test creates contexts with gateway commands only, or creates them before the block.
+  Not needed, because libiio switches the locale itself or parses no floating-point text: `iio_attr_read_double`, `iio_attr_read_bool`, `iio_attr_read_longlong`, `iio_attr_read_raw`, `iio_attr_get_available`, every channel, mask, buffer, block, stream, event and low-level function except the two register functions of the table (`iio_channel_convert*` use the scale as a number; `iio_channel_get_data_format` returns what context creation parsed). Audited in wave 1b and found free of the four patterns: `iio_has_backend` (the pinned build has no backend modules), `iio_get_builtin_backends_count`, `iio_get_builtin_backend`, `iio_strerror`, `iio_scan_get_results_count`, `iio_scan_get_uri`, `iio_scan_get_description`, `iio_scan_destroy`, `iio_channel_refresh_format` (the format text is parsed with `%c` and `%u` only), `iio_event_get_channel` (`strtoul` only), the buffer, block, mask and `iio_stream` functions with emu's operations behind them, and everything `src/stream.c` calls. A wave 1b task whose command calls a libiio function that is not in either list checks the function's source for the four patterns above, brackets the call if one is reached, and reports it. Test helpers that call libiio directly (`mt_open_context`, `dp_open_fake`, the `dp_*` builders, `fixture_*`) have no guard: inside a `mt_comma_begin()` block a test creates contexts with gateway commands only, or creates them before the block.
 - **Every gateway C file** includes `"mx_util.h"` first and follows the MEX build rules of Global Constraints.
 
 ### Data-path objects (who registers what, and how)
@@ -219,18 +220,18 @@ Failure modes that cross task boundaries. Each names the tasks that hold the tes
 | stream's mask (read-only) | `GW_T_MASK` | `buffer_stream_get_channels_mask` | `gw_handle_borrow(GW_T_MASK, m, bs_id, &id)` | its buffer stream is closed |
 | buffer stream | `GW_T_BUFFER_STREAM` | `buffer_open` | `dp_add_bufstream(bs, buf_id)`: `pre_destroy` = `iio_buffer_stream_cancel`, then `iio_buffer_stream_stop` if the entry has `BS_STARTED`; `destroy` = `iio_buffer_close` | `buffer_close`; context destroyed. Order: cancel, stop, its blocks, its mask view and its converter cache, close (fake log `X s F.. X C`, as the stream layer and `iio_stream_destroy` do: a legacy IIOD releases the remote buffer only on stop) |
 | block | `GW_T_BLOCK` | `buffer_stream_create_block` | `dp_add_block(b, bs_id)` | `block_destroy`; its buffer stream is closed |
-| `iio_stream` | `GW_T_STREAM` | `buffer_create_stream` | `gw_handle_add(GW_T_STREAM, st, buf_id, true, &ops, NULL)`; `ops.destroy` = `iio_stream_cancel` then `iio_stream_destroy` on an input buffer; on an output buffer `iio_stream_destroy` alone (its blocking dequeues send the queued blocks), except when the context timeout is infinite (`iio_context_get_params(ctx)->timeout_ms < 0`): then `iio_stream_cancel` first, so the destroy cannot block for ever | `stream_destroy`; context destroyed. First its views are invalidated |
-| stream's buffer stream / blocks | `GW_T_BUFFER_STREAM` / `GW_T_BLOCK` | `stream_get_next_block` | `gw_handle_borrow(.., st_id, &id)` | `stream_destroy` |
+| `iio_stream` | `GW_T_STREAM` | `buffer_create_stream` | `gw_handle_add(GW_T_STREAM, st, buf_id, true, &ops, aux)` (`aux`: a `malloc` struct with the buffer pointer, `nb_blocks` and the ids of the block views registered so far, freed by the destroy op: the handle table cannot list an entry's children and `struct iio_stream` is opaque); `ops.destroy` = `iio_stream_cancel` then `iio_stream_destroy` on an input buffer; on an output buffer `iio_stream_destroy` alone (its blocking dequeues send the queued blocks), except when the context timeout is infinite (`iio_context_get_params(ctx)->timeout_ms < 0`): then `iio_stream_cancel` first, so the destroy cannot block for ever | `stream_destroy`; context destroyed. First its views are invalidated |
+| stream's buffer stream / blocks | `GW_T_BUFFER_STREAM` / `GW_T_BLOCK` | `stream_get_next_block` | `gw_handle_borrow(.., st_id, &id)`; the buffer-stream view gets `BS_STARTED` when it is registered (libiio started it in that call) | `stream_destroy` |
 | event stream | `GW_T_EVENT_STREAM` | `device_create_event_stream` | `gw_handle_add(GW_T_EVENT_STREAM, es, dev_id, true, &ops, NULL)`; `ops.destroy` = `iio_event_stream_destroy` | `event_stream_destroy`; context destroyed |
-| fast-path stream | `GW_T_CONV_STREAM` | `conv_stream_open` | `gw_handle_add(GW_T_CONV_STREAM, s, buf_id, true, &ops, NULL)`; `ops.destroy` calls `iio_conv_stream_close(&s)` | `conv_stream_close`; context destroyed |
+| fast-path stream | `GW_T_CONV_STREAM` | `conv_stream_open` | `gw_handle_add(GW_T_CONV_STREAM, s, buf_id, true, &ops, aux)` (`aux`: `malloc` struct `{ctx, timeout_ms}`, freed by the op); `ops.destroy` calls `iio_conv_stream_close(&s)`; for a transmit stream opened with `timeout_ms` -1 on a context whose timeout is infinite it first sets the stream to non-blocking and polls `iio_conv_stream_flush` 1 ms apart for at most 1000 ms (the stream layer's close waits under the stream's own policy and has no bound of its own) | `conv_stream_close`; context destroyed |
 
 `dev_id`, `buf_id` are the borrowed ids of the device and buffer (children of the context). Because children are always created after their parent, "newest first" gives the libiio-safe order blocks, buffer stream, masks, context, and every worker thread (one per open buffer stream) is gone before `iio_context_destroy` and before the MEX can unload.
 
-A borrowed entry of type mask, buffer stream or block is called a **view** in this plan. Ownership rules every command applies: `gw_handle_owned(id) == false` on a mask, buffer stream or block means "belongs to a stream": `channel_enable`, `channel_disable`, `buffer_stream_start`, `buffer_stream_stop`, `buffer_stream_create_block`, `block_enqueue`, `block_dequeue` raise `iio:EPERM`; the destroy commands do nothing. The flags word of a `GW_T_BUFFER_STREAM` entry (`BS_STARTED`) is written by `cmd_buffer.c`; its cache slot (`gw_handle_set_cache`) belongs to `cmd_block.c` (converter cache). The flags of a `GW_T_BLOCK` entry (`BLK_ENQUEUED`, `BLK_CPU_OFF`) are written by `cmd_block.c` (owned blocks) and `cmd_stream.c` (views: set on every block of the stream except the one returned last; after a failed `stream_get_next_block` set on every block of the stream, so no data access is possible until a `next` succeeds).
+A borrowed entry of type mask, buffer stream or block is called a **view** in this plan. Ownership rules every command applies: `gw_handle_owned(id) == false` on a mask, buffer stream or block means "belongs to a stream": `channel_enable`, `channel_disable`, `buffer_stream_start`, `buffer_stream_stop`, `buffer_stream_create_block`, `block_enqueue`, `block_dequeue` raise `iio:EPERM`; the destroy commands do nothing. The flags word of a `GW_T_BUFFER_STREAM` entry (`BS_STARTED`) is written by `cmd_buffer.c`, and once by `cmd_stream.c` for the view of a stream's buffer stream (set when the view is registered, so `buffer_stream_is_started` is true for the buffer stream of a running `iio.Stream`); its cache slot (`gw_handle_set_cache`) belongs to `cmd_block.c` (converter cache). The flags of a `GW_T_BLOCK` entry (`BLK_ENQUEUED`, `BLK_CPU_OFF`) are written by `cmd_block.c` (owned blocks) and `cmd_stream.c` (views: set on every block of the stream except the one returned last; after a failed `stream_get_next_block` set on every block of the stream, so no data access is possible until a `next` succeeds).
 
 ### MATLAB (M)
 
-- Every class is `classdef X < iio.internal.Object` (a `handle`). Hidden properties: `Handle` (`uint64` gateway id, 0 = none) and `Parent` (the MATLAB object it came from, which keeps the parent alive). Every class accepts the internal constructor form `X(parent, handle)` with `handle` of class `uint64`, and `X()` (for object arrays); public constructor forms are listed in "MATLAB surface".
+- Every class is `classdef X < iio.internal.Object` (a `handle`). Hidden properties: `Handle` (`uint64` gateway id, 0 = none) and `Parent` (the MATLAB object it came from, which keeps the parent alive). Every class accepts the internal constructor form `X(parent, handle)` with `handle` of class `uint64`, and `X()` (for object arrays); public constructor forms are listed in "MATLAB surface". Exceptions: `iio.RxStream` and `iio.TxStream` have only their public form (the literal `arguments` block requires `dev` and `channels`), so `iio.RxStream()` is an error and a test that constructs every class without arguments leaves these two out (`X.empty(1, 0)` works for them as for every class). Where the public and the internal form share a position (`iio.BufferStream(buf, arg)`, `iio.Block(parent, arg)`, `iio.Stream(buf, mask, ..)`), the class of that argument selects the form: a `uint64` is always a handle to wrap; `iio.ChannelsMask(dev)` and `iio.EventStream(dev)` select by `nargin == 1`.
 - `a == b` and `a ~= b` on iio objects compare `Handle` (same libiio object), element-wise, as Python's `__eq__` does.
 - Public members are `snake_case` and follow libiio's Python binding; name-value options are `PascalCase`.
 - Text arguments are declared `(1,1) string` in an `arguments` block (so `'abc'` and `"abc"` both work) and passed to the gateway as `char(x)`. Text results are `char`; lists of text are 1-by-N cell arrays of `char`; a missing name or label is `''` (`char(iio_mex(...))` turns the gateway's `[]` into `''`).
@@ -238,6 +239,7 @@ A borrowed entry of type mask, buffer stream or block is called a **view** in th
 - A wrapper object stores only facts that cannot change while its context lives (ids and names, as `SetAccess = immutable` properties read once in the constructor); everything else is a `Dependent` property or a method and costs gateway calls per use.
 - A constructor calls the gateway only when its `handle` argument is non-zero (`if handle ~= 0, obj.name = iio_mex('attr_get_name', handle); end`, as `Attr.m` and `Device.m` do), so `X()`, `X.empty(1, 0)` and the elements MATLAB creates when an object array grows stay free of gateway calls, and immutable properties of such an object keep their class default (`''`).
 - A test never constructs a real iio class with a non-zero handle that the gateway did not return (`iio.Channel([], uint64(5))` raises `iio:EBADF` in the constructor as soon as the class reads its name there: this broke `tObjectModel.empties` after Task 13). Tests of the object model that need made-up handles use `ObjModelProbe("a", Handle = uint64(5))`, which calls no gateway command; real classes appear with made-up state only as `X()` and `X.empty`.
+- An argument declared with an iio class (`dev (1,1) iio.Device`, `mask (1,1) iio.ChannelsMask`, `block (1,1) iio.Block`) is not a type check: MATLAB converts a value of another class by calling the class constructor with it **[CI]**. Because every class accepts `X(parent)`, a number or an object of another iio class usually becomes an object without a handle and the gateway answers `iio:EBADF`; a test of such a wrong argument therefore asserts "an identifier starting with `MATLAB:` or `iio:`" (as `tEventStream.decodeArguments` does), never an exact identifier. One conversion has an effect: an `iio.Device` given where an `iio.ChannelsMask` is declared (`ch.enable(dev)`, `ch.is_enabled(dev)`, `dev.sample_size(dev)`, `buf.open(dev)`) becomes `iio.ChannelsMask(dev)`, a new empty mask that is deleted when the call returns, so the call works on a mask nobody keeps instead of failing. Task 22 decides whether the methods that take a mask check `isa` on an untyped argument instead; no wave 1b test depends on either behaviour.
 - `string(missing)` passes a `(1,1) string` validator and fails in `char(x)` with a MATLAB conversion error (identifier starting with `MATLAB:`, exact name **[CI]**). That is accepted as it is: no class adds a validator for it, and `tStrings` (Task 22) asserts only "an identifier starting with `MATLAB:` or `iio:`". A text argument that contains `char(0)` reaches the gateway and raises `iio:EINVAL` there; binary data goes through `write_raw`.
 - `delete`, `destroy` and `close` call the destroy command unconditionally when `Handle ~= 0` (it is a no-op for stale ids and for borrowed objects) and never rewrite `Handle`, so M code keeps no ownership or "closed" flag: a later call on the object raises `iio:EBADF` by itself.
 - A `Dependent` property documented as "the Parent, after `<command>` confirmed its handle" calls the command and returns `obj.Parent` when the id equals `obj.Parent.Handle`; otherwise it raises `error('iio:EBADF', ...)`.
@@ -272,7 +274,7 @@ What emu cannot test, and what covers it:
 | `iio_context_set_timeout` reaching the backend | value stored only | fake `timeout` (Task 10) |
 | scan with results | always 0 results | empty result only; MATLAB tests never scan `local`, `ip` or the default list |
 
-Explicitly untested in this plan, and stated so in `matlab/README.md` (Task 26): `local:`, `ip:`, `usb:`, `serial:` backends and real hardware; DMABUF success paths; cross-thread `iio_buffer_stream_cancel`; a dequeue that timed out on libiio's generic block path; Ctrl-C during a blocking call; a race at process exit between libiio's exit handler (`xmlCleanupParser()` on MATLAB's libxml2) and other MATLAB threads, beyond the ten exit-check steps of Task 8b (fallback F1 removes it); a v0 `libiio.so.0` already loaded in the MATLAB process by another toolbox; `parfor` workers; frame sizes above 4096 samples per block on emu other than in the timing test; scan results of real backends.
+Explicitly untested in this plan, and stated so in `matlab/README.md` (Task 26): `local:`, `ip:`, `usb:`, `serial:` backends and real hardware; DMABUF success paths and a successful `disable_cpu_access`; a block queued after `cancel` on a backend that uses libiio's enqueue worker; cross-thread `iio_buffer_stream_cancel`; a dequeue that timed out on libiio's generic block path; Ctrl-C during a blocking call; a race at process exit between libiio's exit handler (`xmlCleanupParser()` on MATLAB's libxml2) and other MATLAB threads, beyond the ten exit-check steps of Task 8b (fallback F1 removes it); a v0 `libiio.so.0` already loaded in the MATLAB process by another toolbox; `parfor` workers; frame sizes above 4096 samples per block on emu other than in the timing test; scan results of real backends.
 
 ### How tests are written
 
@@ -315,7 +317,7 @@ cmake --build $B                                      # wave 1: cmake --build $B
 - **G1 mock tests** (ASan + UBSan + LeakSanitizer; `mexFunction()` called directly on the mock runtime; they need one installed locale with a decimal comma, see "How tests are written"; `locale -a` on the development machine lists `en_DK.utf8`): `ctest --test-dir $B -L mex -R '^(test_|mx_conformance_|mex_bundled_libs)' --output-on-failure`; wave 1: `ctest --test-dir $B -R '^test_cmd_<group>$' --output-on-failure`. "Run G1 for `test_x`" in a task means the build line above followed by `ctest --test-dir $B -R '^test_x$' --output-on-failure`.
 - **G2 real MEX build:** `ctest --test-dir $B -R '^mex_(exports|loadcheck)$' --output-on-failure` (exports, `_800` imports, `dlopen` against real `libmx`/`libmex`); wave 1: the target `iio-mex-real-<group>` builds (gateway sources are compiled with `-Werror`, so a warning fails the build).
 - **G3 lint:** `MATLAB_ROOT=/usr/local/MATLAB/R2025b matlab/tools/check_mlint.sh <your .m files>` and the same with `MATLAB_ROOT=/usr/local/MATLAB/R2023b`. Without file arguments it checks every `.m` file. Expected: `check_mlint: <n> file(s), no errors`.
-- **G4 static API check:** `python3 matlab/tools/check_api.py --iio-h deps/install/include/iio/iio.h` (wave 0), with `--group <group>` (wave 1), with `--strict` (from Task 22 on). Expected last line: `check_api: <rows> rows, <commands> commands, 0 error(s)`; in wave 1 additionally no `check_api: pending:` line names a file you own (a pending line about a member in another task's file is that task's).
+- **G4 static API check:** `python3 matlab/tools/check_api.py --iio-h deps/install/include/iio/iio.h` (wave 0), with `--group <group>` (wave 1), with `--strict` (from Task 22 on). Expected last line: `check_api: <rows> rows, <commands> commands, 0 error(s)`; in wave 1 additionally no `check_api: pending:` line is about a command your task registers or a member your task writes (a line about another task's stub names your file when your M code calls that stub, e.g. `channel_read: is still a stub` lists `Channel.m`; such a line, and one about a member in another task's file, is that task's).
 - **G1 to G4 in one go** (serial tasks, CI): `ctest --test-dir $B -L mex --output-on-failure`.
 - **G5 CI, authoritative, controller only:** `git push origin feat/matlab-bindings`, then as ONE background command (never poll in the foreground) `sha=$(git rev-parse HEAD); until id=$(gh run list --workflow CI --commit "$sha" --json databaseId --jq '.[0].databaseId') && [ -n "$id" ]; do sleep 5; done; gh run watch "$id" --exit-status; gh run view "$id" --json headSha,conclusion`. The run is selected by commit, not by "latest on the branch": right after a push the latest run is still the previous one, and a run cancelled by the workflow's `concurrency` setting is not a result. The verdict counts only if `headSha` equals `$sha`. The evidence is the two jobs `MATLAB bindings (<release>)` and the file `matlab.xml` at the top of each artifact `matlab-<release>`. When G5 is red although G1 to G4 pass: Appendix C.
 - Finish every task with `rm -rf $B`.
@@ -940,11 +942,11 @@ int iio_conv_stream_open(struct iio_buffer *buf,
  * buffer was started; iio_block_destroy() for every block;
  * iio_buffer_close(); then the converters. A cyclic block is never dequeued.
  *
- * Close never waits without bound: when the wait policy is
- * IIO_CONV_STREAM_TIMEOUT_CONTEXT and the context timeout is infinite
- * (iio_context_get_params()->timeout_ms < 0), the frames in flight are
- * awaited with non-blocking dequeues 1 ms apart for at most 1000 ms in
- * total; what has not completed by then is cancelled.
+ * (As merged, the close has no bound of its own: it waits under the wait
+ * policy, which for IIO_CONV_STREAM_TIMEOUT_CONTEXT on a context with an
+ * infinite timeout is one blocking dequeue per frame. A caller that must not
+ * block sets a policy first: the MEX gateway's destroy op does, see
+ * "Data-path objects". tests/test_stream_fake.c: tx_close_policy.)
  */
 void iio_conv_stream_close(struct iio_conv_stream **stream);
 
@@ -1101,10 +1103,10 @@ Every gateway command, grouped by the file that registers it. Task 4 writes ever
 
 | Command | Args | Out | Arguments | Result | Wraps |
 |---|---|---|---|---|---|
-| `strerror` | 1 | 1 | err (integer in `int` range) | char | =; `iio_strerror(err, buf, 256)` |
+| `strerror` | 1 | 1 | err (integer in [-`INT_MAX`, `INT_MAX`]; `INT_MIN` is `iio:EINVAL`, because `iio_strerror` negates the value) | char | =; `iio_strerror(err, buf, 256)` |
 | `has_backend` | 2 | 1 | params, backend (char) | tf | = |
 | `get_builtin_backends` | 0 | 1 | — | 1-by-N cell of char | list: `iio_get_builtin_backends_count`, `iio_get_builtin_backend` |
-| `scan` | 2 | 1 | params, backends (char) or `[]` | scan | =; owned `GW_T_SCAN` root, destroy op `iio_scan_destroy`; result first; `iio_scan` inside `gw_c_numeric_enter` / `_leave`; `iio_err` check before registering |
+| `scan` | 2 | 1 | params, backends (char) or `[]` | scan | =; owned `GW_T_SCAN` root, destroy op `iio_scan_destroy`; result first; `iio_scan` inside `gw_c_numeric_enter` / `_leave`; `iio_err` check before registering; libiio copies the backends text into a 1024-byte buffer and cuts a longer list without notice (not checked) |
 | `scan_destroy` | 1 | 0 | id | — | = |
 | `scan_get_results` | 1 | 2 | scan | uris, descriptions (each a 1-by-N cell of char) | list: `iio_scan_get_results_count`, `iio_scan_get_uri`, `iio_scan_get_description` |
 
@@ -1179,8 +1181,8 @@ Every returned id is a borrowed child of the device's context.
 | `channel_find_attr`, `channel_find_event_attr` | 2 | 1 | ch, name | attr or 0 | = |
 | `channel_get_data_format` | 1 | 1 | ch | scalar struct: `length`, `bits`, `shift`, `repeat` (n), `is_signed`, `is_fully_defined`, `is_be`, `with_scale`, `is_float` (tf), `scale`, `offset` (n) | =; a copy |
 | `channel_refresh_format` | 1 | 0 | ch | — | = |
-| `channel_convert`, `channel_convert_inverse` | 2 | 1 | ch, u8 | u8, same length | =; a channel whose format `length` is 0 (not a scan element) is `iio:EINVAL`, checked BEFORE the multiple test (which would divide by zero); the length must be a multiple of `length/8 * repeat`, else `iio:EINVAL`; an empty input returns 1-by-0; one C call per sample |
-| `channel_enable`, `channel_disable` | 2 | 0 | ch, mask | — | =; `iio:EINVAL` if the channel is not a scan element or the mask is of another device; `iio:EPERM` on a borrowed mask |
+| `channel_convert`, `channel_convert_inverse` | 2 | 1 | ch, u8 | u8, same length | =; a channel whose format `length` is 0 (not a scan element) is `iio:EINVAL`, checked BEFORE the multiple test (which would divide by zero); the length must be a multiple of `length/8 * repeat`, else `iio:EINVAL` (the gateway answers `iio:EINVAL` whenever `length/8 * repeat` is 0, which also covers a storage length below 8 bits); an empty input returns 1-by-0; one C call per sample |
+| `channel_enable`, `channel_disable` | 2 | 0 | ch, mask | — | =; `iio:EINVAL` if the channel is not a scan element or the mask is of another device; `iio:EPERM` on a borrowed mask. Order of the checks: other device (`EINVAL`), borrowed mask (`EPERM`), not a scan element (`EINVAL`) |
 | `channel_is_enabled` | 2 | 1 | ch, mask | tf | =; same device check |
 | `create_channels_mask` | 1 | 1 | dev | mask | result first; =, but takes the device (C takes its channel count); `iio:EINVAL` for a device without channels (libiio returns NULL) |
 | `channels_mask_destroy` | 1 | 0 | id | — | = |
@@ -1198,10 +1200,10 @@ Every returned id is a borrowed child of the device's context.
 | `buffer_open` | 2 | 1 | buf, mask | bs | =; result first; `iio_err` check; `iio:EINVAL` if the mask is of another device |
 | `buffer_close` | 1 | 0 | id | — | = |
 | `buffer_stream_start`, `buffer_stream_stop` | 1 | 0 | bs | — | =; no libiio call when already in that state; `iio:EPERM` on a borrowed buffer stream |
-| `buffer_stream_cancel` | 1 | 0 | bs | — | =; allowed on a borrowed buffer stream; `BS_STARTED` is unchanged |
+| `buffer_stream_cancel` | 1 | 0 | bs | — | =; allowed on a borrowed buffer stream; `BS_STARTED` is unchanged. `iio_buffer_stream_cancel` also stops libiio's enqueue worker of the stream (`iio_task_stop`), and `buffer_stream_start` is then a no-op because the flag is set: only `buffer_stream_stop` followed by `buffer_stream_start` starts the worker again (read from `buffer.c`, not measured; the worker serves only backends without block operations). The class help of `iio.BufferStream` says "after cancel: stop, then start" |
 | `buffer_stream_get_channels_mask` | 1 | 1 | bs | mask (borrowed, read-only) | =; the same id on every call |
-| `buffer_stream_create_block` | 2 | 1 | bs, nbytes | blk | =; result first; `iio_err` check; `iio:EPERM` on a borrowed buffer stream |
-| `buffer_stream_is_started` | 1 | 1 | bs | tf | X: the `BS_STARTED` flag |
+| `buffer_stream_create_block` | 2 | 1 | bs, nbytes | blk | =; result first; `iio_err` check; `iio:EPERM` on a borrowed buffer stream; nbytes is an integer in 0 .. `LLONG_MAX` and libiio judges it (`-EINVAL` below one sample); there is no upper bound in the gateway, so a huge value is the backend's `malloc` failure (`iio:ENOMEM`; AddressSanitizer aborts on it in a mock test) |
+| `buffer_stream_is_started` | 1 | 1 | bs | tf | X: the `BS_STARTED` flag (true for the buffer stream of an `iio_stream` from the first successful `stream_get_next_block` on) |
 
 #### Group `block` (`cmd_block.c`, Task 17)
 
@@ -1212,11 +1214,11 @@ Every returned id is a borrowed child of the device's context.
 | `block_destroy` | 1 | 0 | id | — | = |
 | `block_first` | 2 | 1 | blk, ch | n = byte offset of the channel's first sample; equals `block_size` when the channel is not enabled | =, as an offset instead of a pointer; `iio:EINVAL` if the channel is of another device |
 | `block_enqueue` | 3 | 0 | blk, bytes_used, cyclic (tf) | — | =; `iio:EPERM` if `BLK_ENQUEUED` or borrowed |
-| `block_dequeue` | 2 | 1 | blk, nonblock (tf) | tf: true = dequeued, false = not ready (`-EBUSY` with `nonblock`) | =; `iio:EPERM`, without calling libiio, if not `BLK_ENQUEUED`, if its buffer stream is not `BS_STARTED`, or if borrowed; if libiio returns `-EPERM` the gateway clears `BLK_ENQUEUED` (libiio says the block is not enqueued: a dequeue that failed on its generic block path has consumed it) and raises `iio:EPERM`; other errors raise (`iio:ETIMEDOUT`, ...) and leave `BLK_ENQUEUED` set |
+| `block_dequeue` | 2 | 1 | blk, nonblock (tf) | tf: true = dequeued, false = not ready (`-EBUSY` with `nonblock`) | =; result first; `iio:EPERM`, without calling libiio, if not `BLK_ENQUEUED`, if its buffer stream is not `BS_STARTED`, or if borrowed; if libiio returns `-EPERM` the gateway clears `BLK_ENQUEUED` (libiio says the block is not enqueued: a dequeue that failed on its generic block path has consumed it) and raises `iio:EPERM`; other errors raise (`iio:ETIMEDOUT`, ...) and leave `BLK_ENQUEUED` set |
 | `block_get_buffer_stream` | 1 | 1 | blk | bs | =; `gw_handle_find(GW_T_BUFFER_STREAM, ..)` |
 | `block_get_dmabuf_fd` | 1 | 1 | blk | n | =; a negative result raises |
-| `block_disable_cpu_access` | 2 | 0 | blk, tf | — | = |
-| `channel_read` | 3 | 1 | ch, blk, raw (tf) | u8: the bytes `iio_channel_read` produced (1-by-0 when the channel is not enabled) | =; channel and block of one device, else `iio:EINVAL`; the gateway tests `iio_channel_is_enabled(ch, <the block's stream mask>)` itself and returns 1-by-0 without calling libiio when it is false (libiio's raw shortcut would copy another channel's data) |
+| `block_disable_cpu_access` | 2 | 0 | blk, tf | — | =; neither emu nor the fake has the operation (`iio:ENOSYS`), so only the gating of data access by `BLK_CPU_OFF` is tested, with the flag set by the test |
+| `channel_read` | 3 | 1 | ch, blk, raw (tf) | u8: the bytes `iio_channel_read` produced (1-by-0 when the channel is not enabled) | =; channel and block of one device, else `iio:EINVAL`; the gateway tests `iio_channel_is_enabled(ch, <the block's stream mask>)` itself and returns 1-by-0 without calling libiio when it is false (libiio's raw shortcut would copy another channel's data); libiio is offered only the whole samples of the block (its loop runs while a sample STARTS inside the block and would read past a block that ends in half a sample) |
 | `channel_write` | 4 | 1 | ch, blk, u8, raw (tf) | n bytes consumed | =; same checks: 0, without calling libiio, for a channel that is not enabled and for an empty `u8` |
 | `block_size` | 1 | 1 | blk | n bytes | X (`iio_block_end` - `iio_block_start`) |
 | `block_get_bytes` | 1-3 | 1 | blk [, off0, count] | u8 | X; default the whole block; a range outside the block is `iio:EINVAL` |
@@ -1224,14 +1226,14 @@ Every returned id is a borrowed child of the device's context.
 | `block_read` | 2 | 1 | blk, opts | N-by-C numeric | X (`iio_conv_read`) |
 | `block_write` | 3 | 1 | blk, data, opts | n samples written = min(rows, capacity); 0, without calling the converter, for zero rows | X (`iio_conv_write`) |
 
-`off0` is a 0-based byte offset. `opts` is `[]` or a scalar struct; an unknown field is `iio:EINVAL`. `block_read` fields: `channels` (`uint64` ids; empty = every scan element enabled in the stream's mask, device order), `class`, `complex`, `scale`, `raw`, `gain`, `offset` (as in `conv_stream_open` below), `samples` (not given = capacity; else an integer ≥ 1, read with `dp_opt_int`: 0, 2.5, NaN, Inf and 1e300 are `iio:EINVAL`); N = min(samples, floor(block_size / step)). In every options struct a field that holds an empty double matrix (`[]`, `double.empty(1,0)`) counts as not given (`dp_is_unset()` of `data_path.h`), so M code passes its `double.empty(1,0)` defaults on unchanged. `block_write` fields: `channels`, `complex`, `scale`, `raw`, `gain`, `offset`; the class comes from `data`; `complex` absent means `mxIsComplex(data)`. `complex` true with real `data` (MATLAB hands a complex array whose imaginary part is all zero to the MEX as a real array): one column per I/Q pair, the Q channels are written as zero. `complex` false with complex `data` is `iio:EINVAL`. A wrong column count is `iio:EINVAL`.
+`off0` is a 0-based byte offset. `opts` is `[]` or a scalar struct; an unknown field is `iio:EINVAL`. `block_read` fields: `channels` (`uint64` ids; empty = every scan element enabled in the stream's mask, device order), `class`, `complex`, `scale`, `raw`, `gain`, `offset` (as in `conv_stream_open` below), `samples` (not given = capacity; else an integer ≥ 1, read with `dp_opt_int`: 0, 2.5, NaN, Inf and 1e300 are `iio:EINVAL`); N = min(samples, floor(block_size / step)). In every options struct a field that holds an empty double matrix (`[]`, `double.empty(1,0)`) counts as not given (`dp_is_unset()` of `data_path.h`), so M code passes its `double.empty(1,0)` defaults on unchanged. `block_write` fields: `channels`, `complex`, `scale`, `raw`, `gain`, `offset`; the class comes from `data`; `complex` absent means `mxIsComplex(data)`. `complex` true with real `data` (MATLAB hands a complex array whose imaginary part is all zero to the MEX as a real array): one column per I/Q pair, the Q channels are written as zero (only the bytes of the Q channels in the rows written; other enabled channels of the block keep their data). The column count is checked before the row count: a 0-by-0 array on a two-channel stream is `iio:EINVAL`, 0-by-2 returns 0. `gain`: a value of 0 is `iio:EINVAL` (`iio_conv_create`); on read the result is raw times gain plus offset, on write the device gets host / gain - offset. `channels` also accepts an empty `uint64` (what `iio.internal.Object.handles(iio.Channel.empty(1,0))` gives) as "all enabled"; a stale or non-channel id in it is `iio:EBADF`, a channel of another device `iio:EINVAL`. N for the output is taken from `iio_device_get_sample_size(dev, <stream mask>)` so that the output exists before a converter is created; `iio_conv_get_step` is compared with it afterwards (a mismatch is the gateway-bug guard `iio:EFAULT`). A block whose buffer stream has no handle-table entry gets a converter for the one call. `complex` false with complex `data` is `iio:EINVAL`. A wrong column count is `iio:EINVAL`.
 
 #### Group `stream` (`cmd_stream.c`, Task 18)
 
 | Command | Args | Out | Arguments | Result | Wraps |
 |---|---|---|---|---|---|
-| `buffer_create_stream` | 4 | 1 | buf, nb_blocks, samples_count, mask | st | =; result first; `iio_err` check; a mask of another device is `iio:EINVAL` |
-| `stream_get_next_block` | 1 | 1 | st | blk (borrowed) | =; `iio_err` check first: on an error (`iio:ETIMEDOUT`, ...) nothing is registered, `BLK_ENQUEUED` is set on every block view of the stream, and the error is raised. On success: registers the stream's buffer stream as a borrowed child of `st` on first use; moves `BLK_ENQUEUED` |
+| `buffer_create_stream` | 4 | 1 | buf, nb_blocks, samples_count, mask | st | =; result first; `iio_err` check; a mask of another device is `iio:EINVAL`; nb_blocks and samples_count are integers ≥ 1 (`gw_arg_int`: 0, 2.5, NaN, Inf are `iio:EINVAL`); a mask without a capturable channel and `samples_count * sample size` beyond `SIZE_MAX / 2` are `iio:EINVAL`. A size that still fits `size_t` is not refused: the backend's `malloc` fails (`iio:ENOMEM`; AddressSanitizer aborts on it in a mock test), and libiio creates as many blocks as asked: a test that passes random numbers bounds both values |
+| `stream_get_next_block` | 1 | 1 | st | blk (borrowed) | =; result first (the call moves blocks); `iio_err` check first: on an error (`iio:ETIMEDOUT`, ...) nothing is registered, `BLK_ENQUEUED` is set on every block view of the stream, and the error is raised. On success: registers the stream's buffer stream as a borrowed child of `st` on first use (with `BS_STARTED`); moves `BLK_ENQUEUED` (other flag bits of a view are kept). After a failed call the next one raises what the backend answers to the enqueue of a block it still holds: `iio:EPERM` on the fake, `iio:EBUSY` on emu (not tested on emu: it needs the 5 s stall) |
 | `stream_cancel` | 1 | 0 | st | — | = |
 | `stream_destroy` | 1 | 0 | id | — | = |
 
@@ -1241,7 +1243,7 @@ Every returned id is a borrowed child of the device's context.
 |---|---|---|---|---|---|
 | `device_create_event_stream` | 1 | 1 | dev | es | =; result first; `iio_err` check |
 | `event_stream_destroy` | 1 | 0 | id | — | = |
-| `event_stream_read` | 2 | 3 | es, nonblock (tf) | tf, id (`uint64`), timestamp (`int64`) | =; tf false with id 0 and timestamp 0 when there is no event (`-EBUSY`, `-EAGAIN` or `-ETIMEDOUT`); other errors raise |
+| `event_stream_read` | 2 | 3 | es, nonblock (tf) | tf, id (`uint64`), timestamp (`int64`) | =; result first (the three results exist, as false, 0, 0, before the read, which consumes the event); tf false with id 0 and timestamp 0 when there is no event (`-EBUSY`, `-EAGAIN` or `-ETIMEDOUT`); other errors raise |
 | `event_get_type` | 1 | 2 | id (`uint64` scalar: the event id) | name, value | =, on the event id; names of `GW_ENUM_EVENT_TYPE` |
 | `event_get_direction` | 1 | 2 | id (`uint64` scalar) | name, value | =, on the event id; names of `GW_ENUM_EVENT_DIRECTION` |
 | `event_get_channel` | 3 | 1 | id (`uint64` scalar), dev, diff (tf) | ch or 0 | =, on the event id, with the check below |
@@ -1252,11 +1254,11 @@ Channel check: at the pinned commit `iio_event_get_channel` returns the device's
 
 | Command | Args | Out | Arguments | Result | Wraps |
 |---|---|---|---|---|---|
-| `device_get_sample_size` | 2 | 1 | dev, mask | n bytes | =; a mask of another device is `iio:EINVAL` |
-| `device_get_trigger` | 1 | 1 | dev | dev (the trigger), or 0 when none is assigned (`-ENODEV`) or libiio returns NULL | =; `iio_err` check; other errors raise |
+| `device_get_sample_size` | 2 | 1 | dev, mask | n bytes | =; a mask of another device is `iio:EINVAL` (libiio accepts any mask with the same word count, so this check is what protects it). Known libiio hazard, not guarded: `iio_device_get_sample_size` computes `size % (length / 8)` for every enabled channel with a scan index, a division by zero for a storage length below 8 bits (no such channel in the fixture) |
+| `device_get_trigger` | 1 | 1 | dev | dev (the trigger), or 0 when none is assigned (`-ENODEV`) or libiio returns NULL | =; `iio_err` check; other errors raise; a trigger device of another context is `iio:EIO` (it would be registered under the wrong context; not reachable with emu or the fake) |
 | `device_set_trigger` | 2 | 0 | dev, trigger dev or 0 (removes it) | — | =; a trigger of another context is `iio:EINVAL` |
-| `device_reg_read` | 2 | 1 | dev, addr | `uint32` | =; addr and value: real, integer-valued, 0 .. 4294967295, else `iio:EINVAL` |
-| `device_reg_write` | 3 | 0 | dev, addr, value | — | = |
+| `device_reg_read` | 2 | 1 | dev, addr | `uint32` | =; addr and value: real, integer-valued, 0 .. 4294967295, else `iio:EINVAL`; result first (libiio's attribute fallback writes the address); inside `gw_c_numeric_enter` / `_leave` |
+| `device_reg_write` | 3 | 0 | dev, addr, value | — | =; no mx allocation; inside `gw_c_numeric_enter` / `_leave` |
 | `device_get_debug_attrs` | 1 | 1 | dev | 1-by-N attr | list: `iio_device_get_debug_attrs_count`, `iio_device_get_debug_attr` |
 | `device_get_event_attrs` | 1 | 1 | dev | 1-by-N attr | list: `iio_device_get_event_attrs_count`, `iio_device_get_event_attr` |
 | `device_find_debug_attr`, `device_find_event_attr` | 2 | 1 | dev, name | attr or 0 | = |
@@ -1266,12 +1268,12 @@ Channel check: at the pinned commit `iio_event_get_channel` returns the device's
 | Command | Args | Out | Arguments | Result | Wraps |
 |---|---|---|---|---|---|
 | `conv_stream_open` | 3 | 1 | dev, chans, opts | cs | X: `iio_conv_stream_open`, `iio_conv_stream_set_timeout`; result first (every argument is parsed, then `gw_ret_id(c, 0, 0)`, then the open) |
-| `conv_stream_read` | 1 | 2 | cs | data (N-by-C of the open class and complexity; all zero when `valid` is false), valid (tf) | X: `iio_conv_stream_read` |
+| `conv_stream_read` | 1 | 2 | cs | data (N-by-C of the open class and complexity; all zero when `valid` is false), valid (tf) | X: `iio_conv_stream_read`; both results exist (valid = false) before the frame is taken |
 | `conv_stream_write` | 2 | 1 | cs, data | valid (tf) | X: `iio_conv_stream_write_typed` |
-| `conv_stream_flush` | 1 | 1 | cs | tf | X: `iio_conv_stream_flush` |
-| `conv_stream_close` | 1 | 0 | id | — | X: `iio_conv_stream_close` |
+| `conv_stream_flush` | 1 | 1 | cs | tf | X: `iio_conv_stream_flush`; result first |
+| `conv_stream_close` | 1 | 0 | id | — | X: `iio_conv_stream_close`, after the bounded drain of "Data-path objects" |
 
-`conv_stream_open`: `chans` is a 1-by-N cell of channel ids as char (looked up with `iio_device_find_channel(dev, id, opts.output)`; an unknown id is `iio:ENOENT` and the message names it) or a `uint64` vector of channel handle ids. The parent of the new handle is the borrowed id of the buffer. `opts` is a scalar struct; a missing field, and one that holds an empty double matrix (`[]`, `double.empty(1,0)`: `dp_is_unset()`), takes its default (a required one is then missing: `iio:EINVAL`); an unknown field is `iio:EINVAL`. The integer fields `buffer`, `samples`, `nb_blocks`, `timeout_ms` are read with `dp_opt_int` (a real integer-valued scalar in the field's range; NaN, Inf, 2.5, 1e300 are `iio:EINVAL`), never by a cast of a `double`:
+`conv_stream_open`: `chans` is a 1-by-N cell of channel ids as char (looked up with `iio_device_find_channel(dev, id, opts.output)`; an unknown id is `iio:ENOENT` and the message names it) or a `uint64` vector of channel handle ids (a handle that is not a live channel is `iio:EBADF`; one of another device or of the other direction is `iio:EINVAL`). Either list may be a row or a column; a matrix, an empty list, a non-char cell element and a char matrix element are `iio:EINVAL`. `complex` with an odd channel count and `cyclic` with `output` false are refused by the gateway (`iio:EINVAL`) before any buffer is opened. The parent of the new handle is the borrowed id of the buffer: that id is registered by the open and stays until its context goes, so the handle count after a close, or after an open that failed once the buffer was chosen, is one above the count before the first open on that buffer. `opts` is a scalar struct; a missing field, and one that holds an empty double matrix (`[]`, `double.empty(1,0)`: `dp_is_unset()`), takes its default (a required one is then missing: `iio:EINVAL`); an unknown field is `iio:EINVAL`. The integer fields `buffer`, `samples`, `nb_blocks`, `timeout_ms` are read with `dp_opt_int` (a real integer-valued scalar in the field's range; NaN, Inf, 2.5, 1e300 are `iio:EINVAL`), never by a cast of a `double`:
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -1293,13 +1295,13 @@ Channel check: at the pinned commit `iio_event_get_channel` returns the device's
 
 | Command | Args | Out | Arguments | Result | Wraps |
 |---|---|---|---|---|---|
-| `test_create_fake_context` | 1 | 1 | xml_file (char) | ctx | X: `fake_reset()`, `fake_create_context(xml_file)` inside `gw_c_numeric_enter` / `_leave`; result first; `iio_err` check; owned `GW_T_CONTEXT` root, destroy op `iio_context_destroy`. `iio:EBUSY` while an earlier fake context is alive (the fake's state is one set of statics) |
+| `test_create_fake_context` | 1 | 1 | xml_file (char) | ctx | X: `fake_reset()`, `fake_create_context(xml_file)` inside `gw_c_numeric_enter` / `_leave`; result first; `iio_err` check; owned `GW_T_CONTEXT` root, destroy op `iio_context_destroy`. `iio:EBUSY` while an earlier fake context is alive (the fake's state is one set of statics; the argument is parsed first, so a wrong argument is `iio:EINVAL` even then, and `iio:EBUSY` does not reset the state) |
 | `test_fake_last_timeout` | 0 | 1 | — | n: `fake.timeout` (-12345 if `set_timeout` was not called since the context was created) | X |
 | `test_fake_last_write` | 0 | 1 | — | 1-by-N `uint8`: `fake.attr_data` (1-by-0 if none) | X |
-| `test_fake_set` | 2 | 0 | field (char), value | — | X: `'rx_frames'`, `'tx_frames'`, `'busy'` (integer value) or `'couple'` (char, `''` = none; the text is copied into a static buffer of `cmd_test.c`); another field is `iio:EINVAL` |
+| `test_fake_set` | 2 | 0 | field (char), value | — | X: `'rx_frames'`, `'tx_frames'`, `'busy'` (whole number 0 .. `INT_MAX`; negative or fractional is `iio:EINVAL`) or `'couple'` (char, `''` = none; the text is copied into a 64-byte static buffer of `cmd_test.c`, 64 characters or more are `iio:EINVAL`); another field is `iio:EINVAL` |
 | `test_fake_log` | 0 | 1 | — | char: `fake.log` | X |
 
-The fake's state is reset when a fake context is created, not when it is destroyed, so the log, the last timeout and the last write can be read after the context is gone.
+The fake's state is reset when a fake context is created, not when it is destroyed, so the log, the last timeout and the last write can be read after the context is gone. (`fake.attr_data`, up to 47000 bytes in the tests, is therefore freed only by the next `fake_reset()` and is still allocated when the MEX unloads; it is reachable through a static, exists only in test builds, and LeakSanitizer does not report it.) Every new fake context starts with the defaults, `couple` included.
 
 #### Functions of `iio.h` without a command
 
@@ -1327,7 +1329,7 @@ v  = iio.version()            % struct: major, minor, patch (double), tag (char)
                               % (context_get_version_* called with uint64(0))
 b  = iio.backends()           % 1-by-N cell of char, libiio order
 tf = iio.has_backend(name)    % name (1,1) string
-s  = iio.strerror(err)        % err (1,1) double {mustBeInteger}; char
+s  = iio.strerror(err)        % err (1,1) double {mustBeInteger}; char. -2^31 and values beyond int are iio:EINVAL
 r  = iio.scan_contexts(backends, opts)
 %   backends (1,1) string = ""   comma-separated, e.g. "usb,ip" or "usb=0456:b673"; omitted: libiio's default list
 %   opts.Timeout  (1,1) double   milliseconds, Inf = no timeout
@@ -1335,7 +1337,7 @@ r  = iio.scan_contexts(backends, opts)
 %   r: 1-by-N struct array with fields uri and description (char); 1-by-0 when nothing is found
 ```
 
-`scan_contexts` passes `[]` for `backends` only when the argument was omitted (`nargin == 0`), releases the scan with `onCleanup(@() iio_mex('scan_destroy', h))`, and reads both result lists with one `scan_get_results` call.
+`scan_contexts` passes `[]` for `backends` only when the argument was omitted (`nargin == 0`), releases the scan with `onCleanup(@() iio_mex('scan_destroy', h))`, and reads both result lists with one `scan_get_results` call. The `nargin == 0` branch is not executed by any MATLAB test (no test may scan the default list); only the gateway side `scan(params, [])` is tested, in `test_cmd_toplevel.c`.
 
 ### `iio.Context` (Task 12; Task 8 writes a first version with the constructor `Context(uri)`, `delete` and `find_attr`)
 
@@ -1466,9 +1468,10 @@ classdef Channel < iio.internal.Object
     properties (Dependent)
         device                  % iio.Device: the Parent, after channel_get_device confirmed its handle
         type, type_id           % char such as 'IIO_VOLTAGE' / double; from hwmon_channel_get_type ('HWMON_TEMP')
-                                % when device.is_hwmon, else from channel_get_type
+                                % when device_is_hwmon(channel_get_device(h)) (asked of the gateway, so it does not
+                                % depend on the Parent), else from channel_get_type
         modifier, modifier_id   % char such as 'IIO_MOD_I', 'IIO_NO_MOD' / double
-        attrs, event_attrs      % 1-by-N iio.Attr
+        attrs, event_attrs      % 1-by-N iio.Attr (their Parent is the channel)
         data_format             % struct of channel_get_data_format
     end
     methods
@@ -1490,9 +1493,13 @@ classdef Channel < iio.internal.Object
 end
 classdef ChannelsMask < iio.internal.Object
     properties (Dependent)
-        device        % iio.Device (the Parent for a mask made with ChannelsMask(dev); for a stream's mask: Parent.buffer.device)
-        channels      % get: the enabled iio.Channel objects, device order. set: enable exactly these
-                      % (disable every scan-element channel of device.channels, then enable the given ones)
+        device        % iio.Device (the Parent for a mask made with ChannelsMask(dev); for a stream's mask: Parent.buffer.device);
+                      % no gateway call (there is no command for the device of a mask); iio:EBADF without such a Parent
+        channels      % get: the enabled iio.Channel objects, device order. set: enable exactly these. The set method
+                      % checks every given channel first (scan_element; channel_is_enabled raises iio:EINVAL for another
+                      % device), so a failed assignment leaves the mask unchanged; then it disables the enabled positions
+                      % (channels_mask_get, ids of device_get_channels) and enables the given ones. [] disables everything;
+                      % a value that is not an iio.Channel array is iio:EINVAL
         sample_size   % device_get_sample_size(device, this mask)
     end
     methods
@@ -1529,6 +1536,8 @@ classdef BufferStream < iio.internal.Object
     end
     methods
         obj = BufferStream(buf, arg)                       % arg an iio.ChannelsMask: buffer_open; arg a uint64: wrap that handle
+                                                           % sample_size asks the gateway directly (buffer_stream_get_channels_mask,
+                                                           % buffer_get_device, device_get_sample_size); after cancel: stop, then start
         start(obj), stop(obj), cancel(obj)
         blk = create_block(obj, nbytes)                    % iio.Block(obj, nbytes)
         close(obj), delete(obj)
@@ -1547,7 +1556,10 @@ classdef Block < iio.internal.Object
                         % else iio.BufferStream(Parent.buffer, handle)
     end
     methods
-        obj = Block(parent, arg)                           % arg a double: buffer_stream_create_block with that many bytes; a uint64: wrap
+        obj = Block(parent, arg)                           % arg a uint64: wrap that handle (always: iio.Block(bs, uint64(32)) wraps handle 32);
+                                                           % any other real numeric scalar: buffer_stream_create_block with that many bytes
+                                                           % (parent must be one iio.BufferStream, else iio:EINVAL). create_block passes a double,
+                                                           % Stream.next a uint64
         enqueue(obj, bytes_used, cyclic)                   % defaults 0 (whole block), false
         tf = dequeue(obj, nonblock)                        % default false
         data = read(obj, opts)
@@ -1577,7 +1589,8 @@ classdef Stream < iio.internal.Object
     properties (SetAccess = immutable), samples_count, nb_blocks, end
     properties (Dependent), buffer, end                    % iio.Buffer: the Parent
     methods
-        obj = Stream(buf, mask, samples_count, nb_blocks)  % nb_blocks (1,1) double = 4; buffer_create_stream
+        obj = Stream(buf, mask, samples_count, nb_blocks)  % nb_blocks (1,1) double = 4; buffer_create_stream. Internal form
+                                                           % Stream(parent, handle): a uint64 second argument; samples_count and nb_blocks are then 0
         blk = next(obj)        % iio.Block(obj, handle): owned by the stream; valid until the next call to next()
         cancel(obj), destroy(obj), delete(obj)   % on an output buffer destroy sends the queued blocks, unless the
                                                  % context timeout is Inf: then they are cancelled (class help)
@@ -1591,7 +1604,8 @@ end
 classdef EventStream < iio.internal.Object
     properties (Dependent), device, end                    % iio.Device: the Parent
     methods
-        obj = EventStream(dev)                             % device_create_event_stream
+        obj = EventStream(dev)                             % device_create_event_stream (only when nargin == 1; EventStream() and
+                                                           % EventStream(parent, handle) call nothing); device is the Parent, no gateway call
         ev = read(obj, nonblock)      % nonblock (1,1) logical = true (a blocking read has no timeout on real backends).
                                       % [] when there is no event, else decode(id, device) plus the field timestamp (int64)
         destroy(obj), delete(obj)
@@ -1611,7 +1625,8 @@ classdef RxStream < iio.internal.Object                    % Parent: the device
     properties (SetAccess = immutable)                     % the read-only copies of the options
         device, channels, SamplesPerFrame, OutputDataType, Complex, Scale, Gain, Offset, Raw, NumBlocks, Timeout
         % device: the iio.Device given. channels: 1-by-N cell of char channel ids in column order, whatever
-        % form the argument had (for iio.Channel objects: their id). The rest: the option values as given.
+        % form the argument had (for iio.Channel objects: their id). The rest: the option values as given, except
+        % that OutputDataType and Scale are stored as char ('double', 'none'): text results are char.
     end
     methods
         function obj = RxStream(dev, channels, opts)
@@ -1644,12 +1659,12 @@ classdef TxStream < iio.internal.Object                    % the same properties
         valid = write(obj, data)     % 1..SamplesPerFrame rows, C columns, any of the ten classes, real or complex
         tf = flush(obj)              % wait until the queued frames are sent
         close(obj), delete(obj)      % idempotent; a close drains the frames in flight first (for at most 1 s
-                                     % when the context timeout is Inf)
+                                     % when the context timeout is Inf and Timeout is -1: the gateway's bound)
     end
 end
 ```
 
-Constructor body: the channel list is `iio.internal.Object.handles(channels)` for an `iio.Channel` array, else `cellstr(channels)`; `iio_mex('conv_stream_open', dev.Handle, ch, s)` with `s` built by one `struct(...)` call of scalar fields (`'output'`, `'samples'`, `'class', char(opts.OutputDataType)`, ...); `'gain', opts.Gain` and `'offset', opts.Offset` go in as they are (the default `double.empty(1,0)` is "not given" at the gateway, as `[]` is: no `isempty` branch in M code). The toolbox parity configuration is `OutputDataType="int16", Complex=true, Raw=true`. The `arguments` block of `RxStream` above is literal.
+Constructor body: the channel list is `iio.internal.Object.handles(channels)` for an `iio.Channel` array, else `cellstr(channels)`, reshaped to 1-by-N in both cases (a column string array is the same list); `iio_mex('conv_stream_open', dev.Handle, ch, s)` with `s` built by one `struct(...)` call of scalar fields (`'output'`, `'samples'`, `'class', char(opts.OutputDataType)`, ...); `'gain', opts.Gain` and `'offset', opts.Offset` go in as they are (the default `double.empty(1,0)` is "not given" at the gateway, as `[]` is: no `isempty` branch in M code). The toolbox parity configuration is `OutputDataType="int16", Complex=true, Raw=true`. The `arguments` block of `RxStream` above is literal (so there is no `RxStream()` form). `read`, `write` and `flush` have no `arguments` block (fast path): a wrong call is answered by the gateway. Tests of a rejected option value (`OutputDataType="int12"`, `Scale="full"`, `Timeout=-2`) assert "an identifier starting with `MATLAB:`" with try/catch; the exact name `MATLAB:validators:mustBeMember` is **[CI]**.
 
 ### Test support (`matlab/tests/`, Task 8)
 
@@ -1883,8 +1898,7 @@ end
   for a real source on a complex stream zero the frame bytes, then convert the I channels with a
   converter built from channels 0, 2, 4, ..; enqueue `nb_samples * step` bytes with the cyclic flag;
   start on the first enqueue. Converters live in a `[10][2]` table. Blocks of an output stream are
-  zeroed at open. Close drains as specified in `iio-conv-stream.h`, including its bound when the
-  context timeout is infinite (read with `iio_context_get_params()`; the context timeout is never changed).
+  zeroed at open. Close drains as specified in `iio-conv-stream.h`: under the wait policy of the stream. (This step and the case `close_bounded` of Step 2 asked for a 1000 ms bound inside the close when the context timeout is infinite; the stream layer as merged has `tx_close_policy` instead and no such bound. The bound a MATLAB destructor needs is in the gateway, Task 21.)
 - [ ] **Step 5:** Run the whole suite in `build-t3`, also with `IIO_CONV_FORCE=scalar`. Expected: PASS, no
   sanitizer or leak report.
 - [ ] **Step 6:** `README.md`: section "Stream layer" (15-line receive and transmit example, the three wait
@@ -2969,6 +2983,7 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
     `gw_handle_borrow(GW_T_MASK, iio_buffer_stream_get_channels_mask(..), bs, &id)` on a `dp_bufstream`:
     `channel_enable` raises `iio:EPERM`, `channels_mask_destroy` leaves the id valid. `channels_mask_destroy(m)` twice, then `channels_mask_get(m)` raises `iio:EBADF`.
   - `gw_handle_destroy(ctx)` with one mask left open: no leak report.
+  - Measured: a channel that is not a scan element (`emu-phy` `voltage0`) has format length 0, bits 0, shift 0 and repeat 1 (not 0). The group has no bracketed command, so the test has no `mt_comma` block.
 - [ ] **Step 2:** Run G1 for `test_cmd_channel` in `build-mex-channel`. Expected: FAIL (commands return `-ENOSYS`).
 - [ ] **Step 3:** Implement `cmd_channel.c`.
 - [ ] **Step 4:** Run G1 for `test_cmd_channel`. Expected: PASS, no sanitizer report.
@@ -3022,7 +3037,7 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
     `buffer_stream_stop` → `is_started` false; again: no error.
   - `buffer_close(bs)`: `gw_handle_ptr(blk, GW_T_BLOCK) == NULL`, `gw_handle_ptr(v, GW_T_MASK) == NULL`; again and
     `buffer_close(0)`: no error; `buffer_stream_start(bs)` raises `iio:EBADF`.
-  - a view registered by the test (`gw_handle_borrow(GW_T_BUFFER_STREAM, ptr, <any owned id>, &id)`): `buffer_stream_start`,
+  - a view registered by the test (`gw_handle_borrow(GW_T_BUFFER_STREAM, ptr, <any owned id>, &id)`, with a `ptr` the table does not hold yet: for a registered pointer the call returns the existing owned entry; the test opens a second buffer with libiio directly): `buffer_stream_start`,
     `_stop`, `_create_block` raise `iio:EPERM`; `buffer_close` leaves it valid.
   - `fake` context (`ctx = dp_open_fake(fx.xml)`): `buffer_open`, two `buffer_stream_create_block`, `buffer_stream_start`, then
     `gw_handle_destroy(ctx)` (context destroyed with everything open) → `fake.log == "OBBSXsFFXC"` (stopped before closed); no leak report.
@@ -3092,7 +3107,7 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
     `iio:EINVAL`; `class 'int16', scale 'fullscale'` → `iio:EINVAL`; `class 'int12'` → `iio:EINVAL`;
     a field `colour` → `iio:EINVAL`; a channel of tx → `iio:EINVAL`.
   - cache: six different option sets, each read twice in rotation, values correct every time; no leak
-    report when the context is destroyed.
+    report when the context is destroyed. (Which slot is replaced, "least recently used", cannot be seen in results: a wrong eviction order still returns correct values. It is reviewed, not tested.)
   - transmit (`emu-tx`, 16-byte block): `block_write(blk, complex int16 [100+1i; -200+2i; 300+3i;
     -400+4i], [])` → 4; `block_enqueue(blk, 16, false)`; start; `block_dequeue` → true; file
     `emu-tx_buf0.bin` is `100,1,-200,2,300,3,-400,4`. `block_write` of a 6×1 → 4 (capacity); of a 4×2
@@ -3103,7 +3118,7 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
     → 0; `channel_write(voltage0_i, blk, empty uint8, false)` → 0. `block_set_bytes(blk, uint8 1..4, 12)` → 4;
     `(.., 14)` raises `iio:EINVAL`. `channel_write(voltage0_i, blk, uint8 bytes of int16 [7 8 9 10], false)` → 8.
   - `block_get_buffer_stream(blk)` → `bs`. `block_destroy(blk)` twice: no error; `block_size(blk)`
-    raises `iio:EBADF`. A view (`gw_handle_borrow(GW_T_BLOCK, ptr, <any owned id>, &id)`): `block_enqueue`, `block_dequeue` raise
+    raises `iio:EBADF`. A view (`gw_handle_borrow(GW_T_BLOCK, ptr, <the buffer-stream or buffer id>, &id)` with a block made by `iio_buffer_stream_create_block` directly, which the test destroys itself: a registered pointer would return its owned entry, and under a context id the block has no device for `dp_device_of()`): `block_enqueue`, `block_dequeue` raise
     `iio:EPERM`; `block_destroy` leaves it valid; with `BLK_ENQUEUED` set by the test `block_read`
     raises `iio:EPERM`.
   - `fake` context (hazard: not ready): enqueue, start, 3 dequeues succeed with re-enqueue; then
@@ -3178,7 +3193,8 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
   - destroy never blocks for ever (fake, `emu-tx`, 1 block, 2 samples, `fake.tx_frames = 0`): `next`, then a second `next`
     that raises `iio:ETIMEDOUT` (the block stays queued), `fake_clear_log()`, `stream_destroy(st)` → the log starts with `d` (default context timeout: the queued block is
     awaited). The same after `iio_context_set_timeout(ctx, -1)` → the log starts with `X` (cancelled first).
-  - `mt_oom_sweep(1, "buffer_create_stream", 4, ..)` on the fake returns ≥ 1 and the log holds exactly one more `O`.
+  - `mt_oom_sweep(1, "buffer_create_stream", 4, ..)` on the fake returns ≥ 1 and the log holds exactly one more `O`; `mt_oom_sweep(1, "stream_get_next_block", 1, ..)` on the fake: exactly one more `D`.
+  - the view of the stream's buffer stream has `BS_STARTED` (`gw_handle_flags`).
 - [ ] **Step 2:** Run G1 for `test_cmd_stream` in `build-mex-stream`. Expected: FAIL.
 - [ ] **Step 3:** Implement `cmd_stream.c` (destroy op of "Conventions / Data-path objects", chosen by `iio_buffer_is_output`).
 - [ ] **Step 4:** Run G1 for `test_cmd_stream`. Expected: PASS, no sanitizer report.
@@ -3299,8 +3315,8 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
   unless stated; `opts` always has `output false`):
   - `rx_int16` (R1, R3, R5, R13): `samples 1024, class 'int16', complex true` → `cs`: owned, parent
     = the id of buffer 0 of `emu-rx`. `conv_stream_read(cs)` with 2 outputs → `data` 1024×1,
-    `mxINT16_CLASS`, complex, element k `(k-2048) + (2047-k)i`, no byte left at the mock's
-    uninitialised pattern; `valid` a logical scalar true. Second read starts `-1024 + 1023i`.
+    `mxINT16_CLASS`, complex, element k `(k-2048) + (2047-k)i` (every element is compared with its value: a byte scan for the mock's
+    uninitialised pattern `0xA5` cannot be used, it is a legitimate byte of the ramp); `valid` a logical scalar true. Second read starts `-1024 + 1023i`.
   - `rx_defaults`: only `samples 8` → 8×2 real double, column 1 `-2048 .. -2041`, column 2 `2047 .. 2040`.
   - `rx_single_fullscale` (R12c): `class 'single', scale 'fullscale', complex true` → first element
     `-1 + 0.99951171875i`. `rx_raw` (R12a): `raw true, class 'int16', complex true` → `2048+2047i`,
@@ -3318,7 +3334,7 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
     `output true` with handles of input channels → `iio:EINVAL`; id `'voltage9'` → `iio:ENOENT` and
     `mock_err_msg()` contains `voltage9`; `iio:device4` `{'rot_quaternion'}` → `iio:ENOTSUP`; an `xml`
     context → `iio:ENOSYS`; a stale device id → `iio:EBADF`. After each, no handle of type
-    `GW_T_CONV_STREAM` exists and no leak is reported.
+    `GW_T_CONV_STREAM` exists and no leak is reported (an open that fails after the buffer was chosen leaves the borrowed buffer id; the test registers the buffers with `dp_buf` first and then counts exactly).
   - `rx_flush_close` (R7, R21): 2 blocks; read, `conv_stream_flush(cs)` → true, read starts
     `1024 - 1025i`. `conv_stream_close(cs)` twice and `conv_stream_close(0)`: no error; then
     `conv_stream_read(cs)` raises `iio:EBADF`. `conv_stream_write(rx cs, data)` raises `iio:EBADF`.
@@ -3352,10 +3368,10 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
   - `tx_no_block`: `emu-tx`, `nb_blocks 2, timeout_ms 0`: writes 1..4 → true; write 5 → false and
     `fake.tx_data` still holds frame 4.
   - `unload` (unload with open streams): one receive and one transmit stream left open, `mock_exit_matlab()` →
-    `fake.log` ends with `C`, contains two `C` and as many `F` as `B`; no leak report.
+    `fake.log` ends with `C`, contains two `C`, as many `F` as `B` and exactly one `D` (the transmit frame is awaited before the cancel); no leak report.
   - `unload_tx_infinite` (a destructor never blocks without bound): `iio_context_set_timeout(ctx, -1)` with libiio
     directly, `fake.tx_frames = 0`, a transmit stream with `nb_blocks 2` and no `timeout_ms`, two writes → true;
-    `mock_exit_matlab()` returns in < 2 s; no leak report.
+    `mock_exit_matlab()` returns in < 2 s; no leak report. (The bounded poll fills the 256-character log with `d`, so the letters after it are lost: the case asserts the time, at least 3 `d` and zero handles.)
   - `mt_oom_sweep(1, "conv_stream_open", 3, ..)` on the fake returns ≥ 1 and the log holds exactly one `O`.
 - [ ] **Step 4:** Run G1 for `test_cmd_conv` in `build-mex-conv`. Expected: FAIL.
 - [ ] **Step 5:** Implement `cmd_conv.c`. Order inside `conv_stream_read`: resolve the handle, create the output
@@ -3382,10 +3398,10 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
   `-4096 + 4094i`; the swapped list with `Gain=[2 3]` → `d(1,:)` is `[-4094+4092i, -6144+6141i]`; `Gain=[1 2 3]` →
   `'iio:EINVAL'`); `flush` (mock case `rx_flush_close`: `NumBlocks=2`, read, `flush()` is true, the next frame starts
   with `complex(int16(1024), int16(-1025))`); `closeTwiceAndDelete` asserts no error from `r.close(); r.close();
-  delete(r)` and `iio.internal.handle_count()` back at its value before the stream was made; `scaleWithIntegerClass` (`'iio:EINVAL'`); `unknownChannel` (`'iio:ENOENT'`);
-  `badOptionValue` (`OutputDataType="int12"` → `'MATLAB:validators:mustBeMember'`);
+  delete(r)` and `iio.internal.handle_count()` one below its value with the stream open (not "back at its value before the stream was made": the open registers the borrowed buffer id, which stays until the context goes); `scaleWithIntegerClass` (`'iio:EINVAL'`); `unknownChannel` (`'iio:ENOENT'`);
+  `badOptionValue` (`OutputDataType="int12"` → an identifier starting with `MATLAB:`, by try/catch);
   `timeoutGivesInvalid` (R8: `tc.Fx.fakeContext()`, `Timeout=0`, `SamplesPerFrame=4`: three valid reads,
-  then `v` false, `d` is `complex(zeros(4,1,'int16'))` in size and class, `nnz(d) == 0`);
+  then `v` false, `d` is `complex(zeros(4,1,'int16'))` in size and class, `real(d)` and `imag(d)` all zero);
   `closeTwiceAndDelete` (R21); `readAfterClose` (`'iio:EBADF'`); `reopen` (R21: close, new object,
   first frame again); `contextSurvives` (`clear` of the context variable while the stream exists:
   `read` still valid).
@@ -3410,7 +3426,7 @@ Every wave 1 task: build directory `build-mex-<group>`; builds only `test_cmd_<g
 
 ### Wave 1 gate (controller, after Tasks 10 to 21 are committed)
 
-- [ ] Build everything (`B=build-mex`, build line of "Gates") and run `ctest --test-dir build-mex -L mex --output-on-failure`. Failures here are integration defects for Task 22; do not start wave 2b before Task 22 is done.
+- [ ] Build everything (`B=build-mex`, build line of "Gates") and run `ctest --test-dir build-mex -L mex --output-on-failure`. Failures here are integration defects for Task 22; do not start wave 2b before Task 22 is done. Done at the integration of wave 1b: 40 tests pass, `check_api.py --strict` reports 0 errors and no pending line. `tests/mex/test_m_sequences.c` was added there: it links every group and replays, with gateway commands only, the call sequences of the M classes that cross command groups, with the values `matlab/tests` asserts (fake context adoption, coupled channel, `'OBBEESXsFFXC'` at shutdown, the blocks and the buffer stream of an `iio_stream` in groups block, buffer, channel and lowlevel, transmit through stream blocks, masks and sample sizes, registers and triggers, context destroyed first). Task 22 extends it rather than repeating it in `test_integration.c`. `tests/fake_backend.h` now sizes its URI buffer for `struct mt_fixture.xml` (the `-Wformat-truncation` that three wave 1b tests worked around).
 - [ ] Push and wait for CI (gate G5). Expected in both `matlab` jobs: `tSlice`, `tFixture`, `tObjectModel`, `tTopLevel`, `tContext`, `tAttr`, `tDevice`, `tFakeBackend`, `tChannel`, `tBuffer`, `tBlock`, `tStream`, `tEventStream`, `tDeviceLowLevel`, `tRxStream`, `tTxStream` run. Hand every red test to Task 22 with the evidence of Appendix C, step 1.
 
 ## Wave 2: integration, end-to-end tests, examples, documentation, CI
@@ -3434,7 +3450,7 @@ Order: Task 22 alone (wave 2a) → push, G5 → Tasks 23 to 27 in parallel (wave
 - [ ] **Step 3:** Set `option(IIO_CONV_API_STRICT ... ON)`. Run `ctest --test-dir build-mex -R '^mex_api_map$'` after re-configuring. Expected: pass.
 - [ ] **Step 4:** Write `tests/mex/test_integration.c` (`MT_GROUPS` naming all eleven groups and `gw_group_test`):
   - `staleIdsEverywhere`: on emu build one object of every handle type (context, device, channel, attr, buffer, mask, buffer stream with one started block, `iio_stream`, conv stream) and keep the ids; `context_destroy`; `mex_handle_count` is 0. Then call every command of `gw_groups` with each stale id as first argument and `mt_empty()` for the remaining arguments up to its `min_rhs`, except `strerror`, `has_backend`, `get_builtin_backends`, `scan`, `create_context`, `event_get_type`, `event_get_direction` and names starting `mex_` or `test_`: a destructor command (`*_destroy`, `buffer_close`, `conv_stream_close`) returns normally; every other raises `iio:EBADF` or `iio:EINVAL`; none succeeds.
-  - `fuzzNoCrash`: seed `0x1105`, 3000 calls; command drawn from all of `gw_groups` except `create_context`, `scan`, `context_destroy`, `mex_shutdown` and names starting `test_`; 0 to 6 arguments drawn from `mt_str("")`, `mt_str("emu-rx")`, `mt_str("voltage0_i")`, `mt_dbl(0)`, `mt_dbl(-1)`, `mt_dbl(1e300)`, `mt_bool(true)`, `mt_empty()`, `mt_u64(0)`, `mt_u64(<destroyed context>)`, `mt_u64(<live emu context>)`, `mt_u64(<its emu-phy device>)`, `mt_u64(<a channel of emu-phy>)`, `mt_u64(<an attribute of emu-phy>)`, a 1-by-2 cell of ids, a scalar struct with one field, `mock_string_object()`, `mock_sparse_double(2,2)`, `mt_bytes` of 4 bytes; `nlhs` 0 to 3. `emu-phy` has no buffer and no stream or block id is in the pool, so no call can reach a dequeue. Before the random calls, one deterministic pass (the random draw would rarely hit it): every command with `min_rhs >= 2` is called with `(mt_u64(<the non-scan channel voltage0 of emu-phy>), mt_bytes of 4 bytes, mt_empty() ...)` up to its `min_rhs`, and with an empty `uint8` in place of the bytes. Each call: `mock_call` returns 0, or `mock_err_id()` starts with `iio:`.
+  - `fuzzNoCrash`: seed `0x1105`, 3000 calls; command drawn from all of `gw_groups` except `create_context`, `scan`, `context_destroy`, `mex_shutdown` and names starting `test_`; 0 to 6 arguments drawn from `mt_str("")`, `mt_str("emu-rx")`, `mt_str("voltage0_i")`, `mt_dbl(0)`, `mt_dbl(-1)`, `mt_dbl(1e300)`, `mt_bool(true)`, `mt_empty()`, `mt_u64(0)`, `mt_u64(<destroyed context>)`, `mt_u64(<live emu context>)`, `mt_u64(<its emu-phy device>)`, `mt_u64(<a channel of emu-phy>)`, `mt_u64(<an attribute of emu-phy>)`, a 1-by-2 cell of ids, a scalar struct with one field, `mock_string_object()`, `mock_sparse_double(2,2)`, `mt_bytes` of 4 bytes; `nlhs` 0 to 3. `emu-phy` has no buffer and no stream or block id is in the pool, so no call can reach a dequeue, and none can reach `buffer_create_stream` or `buffer_stream_create_block` with `1e300`-like sizes (if a buffer or buffer-stream id is ever added to the pool, the numbers for these two commands must be bounded: a huge size that fits `size_t` is a `malloc` that AddressSanitizer aborts on). Before the random calls, one deterministic pass (the random draw would rarely hit it): every command with `min_rhs >= 2` is called with `(mt_u64(<the non-scan channel voltage0 of emu-phy>), mt_bytes of 4 bytes, mt_empty() ...)` up to its `min_rhs`, and with an empty `uint8` in place of the bytes. Each call: `mock_call` returns 0, or `mock_err_id()` starts with `iio:`.
   - `oomSweep`: `mt_oom_sweep` over `create_context`, `context_find_device`, `device_find_channel`, `device_find_attr`, `context_get_devices`, `device_get_channels`, `context_get_xml`, `attr_read_raw`, `attr_get_available`, `create_channels_mask`, `buffer_open`, `buffer_stream_create_block`, `conv_stream_open`, `conv_stream_read`, each with valid arguments: every sweep returns ≥ 1 and the final attempt succeeds. For `create_context`, `create_channels_mask`, `buffer_open` and `buffer_stream_create_block`, `gw_handle_count()` after the sweep is exactly one more than before it (result first: a failed attempt registers nothing and creates nothing).
   - `leakLoop`: 200 times: context, device, mask, buffer stream, block, then `context_destroy`; `mex_handle_count` is 0 after iteration 1 and after iteration 200; `mock_live()` is the same after both.
   - `clearWhileStreaming`: conv stream open on emu and one frame read; `mock_clear_mex()`; `mock_is_locked()` still true and a second read is valid with the next frame.
@@ -3517,6 +3533,7 @@ Order: Task 22 alone (wave 2a) → push, G5 → Tasks 23 to 27 in parallel (wave
 
 - [ ] **Step 1:** Write `matlab/README.md` with these sections: Requirements (Linux x86-64, MATLAB R2023b or later, GCC, CMake, Ninja); Build (`deps/build-libiio.sh`; `cmake -S . -B build -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DMatlab_ROOT_DIR=<root>`; `cmake --build build`; `addpath('<repo>/matlab')`); Quick start (receive, transmit, attribute: 15 lines); Object model and lifetime (who owns what, `delete`/`close`, `iio.internal.shutdown()`, why `clear mex` does not unload while objects exist); Fast path (every option of `RxStream`/`TxStream`, the `valid` output, `flush`, the timeout being a property of the context plus the per-stream `Timeout`); Errors (`iio:<ERRNONAME>`, `try`/`catch` on the identifier); Class reference (one table row per row of `api-map.tsv`: C function, MATLAB member, note; 141 C functions); Coming from libiio v0 (one row per v0 call the toolboxes use: `iio_create_context_from_uri`; `iio_context_set_timeout` (0 meant "no timeout" in v0); the per-type `iio_channel_attr_*`, `iio_device_attr_*`, `iio_device_debug_attr_*` calls; `iio_channel_enable`; `iio_device_set_kernel_buffers_count` → `NumBlocks`; `iio_device_create_buffer` → `RxStream`/`TxStream`; `iio_buffer_refill` → `read`; `iio_buffer_push` → `write`; `iio_buffer_get_poll_fd` → none; `iio_buffer_set_blocking_mode` → `Timeout=0`; `iio_channel_convert` → `Scale="none"`); Differences from the toolboxes' data path (the storage word needs `Raw=true`; transmit rounds half to even where `cast` rounds half away from zero; integer input saturates; scaled modes need a floating-point class); Limitations (no code generation yet; Linux x86-64 only; an attribute of 32767 bytes or more cannot be read from an iiod that speaks the legacy text protocol (`iio:EIO`), and none above 32 MiB anywhere (`iio:EFBIG`); a blocking call cannot be interrupted with Ctrl-C; no C pointer leaves the gateway, so libad9361 functions that take an `iio_device *` or `iio_context *` (`ad9361_set_bb_rate`, `ad9361_fmcomms5_multichip_sync`) cannot be called and must be reimplemented on attributes by a toolbox port; the untested list of "Conventions / Test data"); Testing (the five gates; the MATLAB suite needs a MEX built with tests enabled, which is the default); Troubleshooting (`Invalid MEX-file`: check `readelf -d matlab/iio_mex.mexa64` for `libiio.so.1` and its RUNPATH; rebuilding while MATLAB holds the MEX: `iio.internal.shutdown()`, then `clear mex`).
 - [ ] **Step 1a:** The README's section "Attributes" states these four facts, each found by the wave 1a review: (1) `read()` returns text and is not exact for a value that is not UTF-8 (invalid bytes become U+FFFD, the text ends at the first zero byte): use `read_raw()` for bytes; (2) `write_double` with `Exact = true` (the default) sends every digit and the kernel truncates, where libiio's `"%f"` (`Exact = false`) rounds to six decimals: round in MATLAB first when a value was computed; a value that needs more than 40 decimals is sent with an exponent and a kernel driver refuses it; (3) text with a zero character (`char(0)`) is refused with `iio:EINVAL` everywhere: binary data goes through `write_raw`; (4) the bindings do not depend on the numeric locale of the MATLAB process (decimal comma) and do not change it.
+- [ ] **Step 1b:** Facts found in wave 1b that the README states: (1) `Gain = 0` is `iio:EINVAL`; on receive the result is raw × gain + offset, on transmit the device gets host / gain − offset; (2) `BufferStream.cancel` leaves the stream "started" while libiio has stopped moving its blocks: call `stop`, then `start`, before queueing again; (3) `iio.Block(bs, n)` creates a block of `n` bytes for any numeric class except `uint64`, which is a handle; (4) with `iio.Stream` on an output buffer the block filled last is never sent, and after a failed `next()` every block is unreadable until a `next()` succeeds; (5) `TxStream.close` waits at most 1 s for the frames in flight when the context timeout is `Inf` and `Timeout` is -1; (6) `handle_count` after an `RxStream` / `TxStream` was closed stays one above the count before the first open on that buffer (the buffer's own entry) until the context goes; (7) an argument that should be an `iio.ChannelsMask` must be one: a device given in its place is converted to a new empty mask by MATLAB (unless Task 22 changed those methods).
 - [ ] **Step 2:** Check the reference against the map: `cut -f1 matlab/api-map.tsv | grep -c -E '^(iio|hwmon)_'` prints `141`, and every one of those names occurs in `matlab/README.md` (`for f in $(cut -f1 matlab/api-map.tsv | grep -E '^(iio|hwmon)_'); do grep -q -w "$f" matlab/README.md || echo "missing $f"; done` prints nothing).
 - [ ] **Step 3:** Edit `README.md`: status line; a "MATLAB bindings" section of at most 30 lines (what it is, the three build commands, a 10-line receive example, link to `matlab/README.md`, the limitations in one sentence).
 - [ ] **Step 4:** Every class and option named in the two files exists: `grep -o -h 'iio\.[A-Z][A-Za-z]*' README.md matlab/README.md | sort -u` lists only names with a file `matlab/+iio/<Name>.m`. Commit `docs: MATLAB bindings README, class reference, v0 mapping, limitations`.
