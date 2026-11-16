@@ -38,7 +38,8 @@ struct iio_conv_stream;
  *   hardware may enable more; the layout follows the mask actually in use.
  * samples_per_frame: frame length in samples; every block holds one frame.
  * nb_blocks: blocks in rotation. Receive: all are queued for capture at all
- *   times. Transmit: that many frames can be in flight.
+ *   times. Transmit: that many frames can be in flight. There is no limit
+ *   here: memory and the backend set it (the open fails with their error).
  * cyclic: transmit only. The first frame written repeats until the stream is
  *   closed; one block is used whatever nb_blocks says.
  * spec: type, layout, scale, complex_iq, saturate, raw. user_gain and
@@ -69,8 +70,9 @@ __iio_conv_api int iio_conv_stream_open(struct iio_buffer *buf,
  * so closing twice is harmless.
  *
  * Order: (transmit, started, not cyclic) wait for the frames in flight,
- * oldest first, each under the wait policy, stopping at the first that does
- * not complete; iio_buffer_stream_cancel(); iio_buffer_stream_stop() if the
+ * oldest first, each under the wait policy, stopping at the first that is
+ * not ready or fails (a lost frame is passed over, and nobody is told);
+ * iio_buffer_stream_cancel(); iio_buffer_stream_stop() if the
  * buffer was started; iio_block_destroy() for every block;
  * iio_buffer_close(); then the converters. A cyclic block is never dequeued.
  */
@@ -83,6 +85,9 @@ __iio_conv_api void iio_conv_stream_close(struct iio_conv_stream **stream);
  * IIO_CONV_STREAM_TIMEOUT_NONBLOCK: one non-blocking dequeue;
  * > 0: non-blocking dequeues 1 ms apart until that many milliseconds have
  *   passed. Independent of the context timeout, which is never changed.
+ *   The wait ends early when libiio turns out not to have the block any
+ *   more (see iio_conv_stream_write()); a read then returns
+ *   IIO_CONV_STREAM_NO_FRAME before the time is up.
  * Returns 0, or -EINVAL for a NULL stream or a value below -1.
  */
 __iio_conv_api int iio_conv_stream_set_timeout(struct iio_conv_stream *stream, int timeout_ms);
@@ -114,6 +119,12 @@ __iio_conv_api int iio_conv_stream_read(struct iio_conv_stream *stream, void *ds
  * queued; repeat the call); -EBUSY on a cyclic stream that already has its
  * frame; -EBADF on a receive stream; -EINVAL for NULL or for nb_samples of 0
  * or more than samples_per_frame; other libiio errors as is.
+ *
+ * -EIO also says that the oldest frame in flight was lost: with a backend
+ * that has no block operations (a local device without the high-speed
+ * interface, an old IIOD) libiio drops a frame whose transfer timed out.
+ * This is reported once per lost frame; the frame of the call that reports
+ * it was not queued, and its block is free for the next call.
  */
 __iio_conv_api int iio_conv_stream_write(struct iio_conv_stream *stream, const void *src,
 		size_t nb_samples);
@@ -138,7 +149,8 @@ __iio_conv_api int iio_conv_stream_write_typed(struct iio_conv_stream *stream, c
  * Transmit: wait, under the wait policy, until every queued frame has been
  * sent. Returns at once on a cyclic stream and before the first write.
  * Returns IIO_CONV_STREAM_FRAME when done, IIO_CONV_STREAM_NO_FRAME when a
- * transmit wait ran out, or a negative errno.
+ * transmit wait ran out, or a negative errno: -EIO, once, when no frame is in
+ * flight any more but at least one was lost (see iio_conv_stream_write()).
  */
 __iio_conv_api int iio_conv_stream_flush(struct iio_conv_stream *stream);
 

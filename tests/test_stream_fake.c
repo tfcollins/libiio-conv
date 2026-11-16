@@ -26,7 +26,9 @@ static const int16_t B[8] = { 11, 12, 13, 14, 15, 16, 17, 18 };
 
 /* --- failures the table of fake_backend.h cannot produce: a second context
  * on the same backend with three ops wrapped. An injected dequeue failure is
- * logged as '!'. --- */
+ * logged as '!'. The wrapper also knows the order in which blocks were queued:
+ * the fake fills whatever block is dequeued with the next frame, so data alone
+ * cannot show that the stream waits for the right block. --- */
 
 static struct {
 	int enable_err;     /* returned when the buffer is enabled */
@@ -35,7 +37,20 @@ static struct {
 	bool dequeue_drops; /* ... which is then no longer queued, as on libiio's
 			     * generic block path after a transfer timed out */
 	unsigned int blocking, polls; /* dequeue calls of either kind */
+	struct iio_block_pdata *fifo[8]; /* queued blocks, oldest first */
+	unsigned int nb_fifo;
+	unsigned int out_of_order; /* dequeues of a queued block that is not the oldest */
 } inject;
+
+static void fifo_remove(struct iio_block_pdata *block)
+{
+	unsigned int i, k = 0;
+
+	for (i = 0; i < inject.nb_fifo; i++)
+		if (inject.fifo[i] != block)
+			inject.fifo[k++] = inject.fifo[i];
+	inject.nb_fifo = k;
+}
 
 static struct iio_backend_ops inject_ops;
 static struct iio_backend inject_backend;
@@ -53,19 +68,34 @@ static int inject_enable_buffer(struct iio_buffer_pdata *pdata, size_t nb_sample
 
 static int inject_enqueue_block(struct iio_block_pdata *block, size_t bytes_used, bool cyclic)
 {
-	return inject.enqueue_err ? inject.enqueue_err : fake_enqueue_block(block, bytes_used, cyclic);
+	int ret = inject.enqueue_err ? inject.enqueue_err :
+		fake_enqueue_block(block, bytes_used, cyclic);
+
+	if (!ret && inject.nb_fifo < 8)
+		inject.fifo[inject.nb_fifo++] = block;
+	return ret;
 }
 
 static int inject_dequeue_block(struct iio_block_pdata *block, bool nonblock)
 {
+	int ret;
+
 	if (nonblock)
 		inject.polls++;
 	else
 		inject.blocking++;
-	if (!inject.dequeue_err || !block->queued)
-		return fake_dequeue_block(block, nonblock);
-	if (inject.dequeue_drops)
+	if (block->queued && inject.nb_fifo && inject.fifo[0] != block)
+		inject.out_of_order++;
+	if (!inject.dequeue_err || !block->queued) {
+		ret = fake_dequeue_block(block, nonblock);
+		if (!ret)
+			fifo_remove(block);
+		return ret;
+	}
+	if (inject.dequeue_drops) {
 		block->queued = false;
+		fifo_remove(block);
+	}
 	fake_log('!');
 	return inject.dequeue_err;
 }
@@ -208,7 +238,9 @@ static void test_policy_calls(void)
 	CHECK(inject.blocking == 1 && inject.polls == 1);
 	CHECK(iio_conv_stream_set_timeout(s, 5) == 0);
 	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_NO_FRAME);
-	CHECK(inject.blocking == 1 && inject.polls >= 2);
+	/* polls 1 ms apart: one at 0, 1, .. 5 ms at most, never a busy loop.
+	 * A slow machine only makes them fewer. */
+	CHECK(inject.blocking == 1 && inject.polls >= 2 && inject.polls <= 1 + 6 + 1);
 	CHECK(iio_conv_stream_set_timeout(s, IIO_CONV_STREAM_TIMEOUT_CONTEXT) == 0);
 	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_NO_FRAME);
 	CHECK(inject.blocking == 2);
@@ -396,6 +428,87 @@ static void test_rx_lost_block(void)
 	iio_conv_stream_close(&s);
 }
 
+/* The block a read waits for is always the one queued longest ago: hardware
+ * fills the blocks in the order it got them. */
+static void test_rx_rotation(void)
+{
+	struct iio_conv_stream *s = NULL;
+	int16_t dst[8];
+	int k;
+
+	reset();
+	fake.rx_frames = 100;
+	CHECK(iio_conv_stream_open(irx_buf, irx_iq, 2, 4, 3, false, &iq16, &s) == 0);
+	if (!s)
+		return;
+	for (k = 0; k < 7; k++) {
+		CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+		CHECK(dst[0] == 256 * k);
+	}
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(inject.out_of_order == 0);
+
+	/* a lost block is queued again behind the others, and the rotation
+	 * moves on to the oldest */
+	inject.dequeue_err = -ETIMEDOUT;
+	inject.dequeue_drops = true;
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_NO_FRAME);
+	inject.dequeue_err = 0;
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_NO_FRAME);
+	for (k = 0; k < 5; k++)
+		CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+	CHECK(inject.out_of_order == 0);
+	iio_conv_stream_close(&s);
+}
+
+/* -EAGAIN is "not ready", as -EBUSY and -ETIMEDOUT are */
+static void test_rx_eagain(void)
+{
+	struct iio_conv_stream *s = NULL;
+	int16_t dst[8];
+
+	reset();
+	fake.rx_frames = 100;
+	CHECK(iio_conv_stream_open(irx_buf, irx_iq, 2, 4, 2, false, &iq16, &s) == 0);
+	if (!s)
+		return;
+	inject.dequeue_err = -EAGAIN;
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_NO_FRAME);
+	CHECK(iio_conv_stream_set_timeout(s, IIO_CONV_STREAM_TIMEOUT_NONBLOCK) == 0);
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_NO_FRAME);
+	inject.dequeue_err = 0;
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+	CHECK(dst[0] == 0);
+	iio_conv_stream_close(&s);
+}
+
+/* A block that cannot be queued again after its frame was read */
+static void test_rx_requeue_fails(void)
+{
+	struct iio_conv_stream *s = NULL;
+	int16_t dst[8];
+	size_t len;
+
+	reset();
+	fake.rx_frames = 100;
+	CHECK(iio_conv_stream_open(irx_buf, irx_iq, 2, 4, 2, false, &iq16, &s) == 0);
+	if (!s)
+		return;
+	inject.enqueue_err = -ENOSPC;
+	len = strlen(fake.log);
+	CHECK(iio_conv_stream_read(s, dst) == -ENOSPC);
+	CHECK(log_grew_by(len, "D"));
+	inject.enqueue_err = 0;
+	/* the next read queues it; it holds nothing new */
+	len = strlen(fake.log);
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_NO_FRAME);
+	CHECK(log_grew_by(len, "E"));
+	CHECK(iio_conv_stream_read(s, dst) == IIO_CONV_STREAM_FRAME);
+	CHECK(dst[0] == 256);
+	CHECK(inject.out_of_order == 0);
+	iio_conv_stream_close(&s);
+}
+
 /* --- transmit --- */
 
 static void test_tx_order(void)
@@ -518,17 +631,22 @@ static void test_tx_coupled(void)
 		0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf6, 0xff, 0x00, 0x00, 0x00, 0x00,
 	};
 	struct iio_conv_stream *s;
+	int k;
 
 	reset();
 	fake.tx_frames = 100;
 	fake.couple = "voltage1_i";
-	s = open_tx(1, false);
+	s = open_tx(3, false);
 	if (!s)
 		return;
 	CHECK(iio_conv_stream_get_step(s) == 6);
-	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
-	CHECK(fake.tx_bytes == 24);
-	CHECK(memcmp(fake.tx_data, sent, 24) == 0);
+	/* every block, not only the first */
+	for (k = 0; k < 3; k++) {
+		memset(fake.tx_data, 0x55, sizeof(fake.tx_data));
+		CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+		CHECK(fake.tx_bytes == 24);
+		CHECK(memcmp(fake.tx_data, sent, 24) == 0);
+	}
 	/* a real array: the Q bytes of the frame before are cleared too */
 	CHECK(iio_conv_stream_write_typed(s, R, 4, IIO_CONV_I16, false) == IIO_CONV_STREAM_FRAME);
 	CHECK(memcmp(fake.tx_data, sent_r, 24) == 0);
@@ -648,7 +766,8 @@ static void test_tx_errors(void)
 	CHECK(!strcmp(fake.log, "!XsFFXC"));
 }
 
-/* As test_rx_lost_block: a block libiio no longer has is free to fill */
+/* As test_rx_lost_block, but here a frame is lost with the block: the block
+ * is free to fill again, and the caller is told once, with -EIO. */
 static void test_tx_lost_block(void)
 {
 	struct iio_conv_stream *s = NULL;
@@ -664,16 +783,35 @@ static void test_tx_lost_block(void)
 	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_NO_FRAME);
 	CHECK(!strcmp(fake.log, "OBES!"));
 	inject.dequeue_err = 0;
+	/* frame A is gone; B is not queued by the call that says so */
+	CHECK(iio_conv_stream_write(s, B, 4) == -EIO);
+	CHECK(!strcmp(fake.log, "OBES!"));
+	CHECK(memcmp(fake.tx_data, A, 16) == 0);
 	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_FRAME);
 	CHECK(!strcmp(fake.log, "OBES!E"));
 	CHECK(memcmp(fake.tx_data, B, 16) == 0);
 
-	/* the same for a flush and for the wait of the close */
+	/* the same for a flush: told once, then nothing is in flight */
 	inject.dequeue_err = -ETIMEDOUT;
 	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_NO_FRAME);
 	inject.dequeue_err = 0;
+	CHECK(iio_conv_stream_flush(s) == -EIO);
 	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
 	CHECK(!strcmp(fake.log, "OBES!E!"));
+
+	/* with a time, "not ready" and "lost" arrive within one wait */
+	CHECK(iio_conv_stream_set_timeout(s, 500) == 0);
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	inject.dequeue_err = -ETIMEDOUT;
+	CHECK(iio_conv_stream_write(s, B, 4) == -EIO);
+	inject.dequeue_err = 0;
+	CHECK(!strcmp(fake.log, "OBES!E!E!"));
+	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(!strcmp(fake.log, "OBES!E!E!ED"));
+	CHECK(iio_conv_stream_set_timeout(s, IIO_CONV_STREAM_TIMEOUT_CONTEXT) == 0);
+
+	/* and for the wait of the close, which has nobody to tell */
 	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
 	inject.dequeue_err = -ETIMEDOUT;
 	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_NO_FRAME);
@@ -681,6 +819,120 @@ static void test_tx_lost_block(void)
 	fake_clear_log();
 	iio_conv_stream_close(&s);
 	CHECK(!strcmp(fake.log, "XsFXC"));
+
+	/* A failed transfer that libiio reported itself is not reported a
+	 * second time when the block turns out to be gone. Three blocks: the
+	 * flush goes on to the frames behind a lost one. */
+	reset();
+	fake.tx_frames = 100;
+	CHECK(iio_conv_stream_open(itx_buf, itx_iq, 2, 4, 3, false, &iq16, &s) == 0);
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	inject.dequeue_err = -EIO;
+	inject.dequeue_drops = true;
+	CHECK(iio_conv_stream_flush(s) == -EIO);
+	inject.dequeue_err = 0;
+	CHECK(!strcmp(fake.log, "OBBBESEE!"));
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(!strcmp(fake.log, "OBBBESEE!DD"));
+
+	/* a lost frame in the middle: the others are still waited for */
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_FRAME);
+	inject.dequeue_err = -ETIMEDOUT;
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_NO_FRAME);
+	inject.dequeue_err = 0;
+	fake_clear_log();
+	CHECK(iio_conv_stream_flush(s) == -EIO);
+	CHECK(!strcmp(fake.log, "D"));
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	CHECK(inject.out_of_order == 0);
+	iio_conv_stream_close(&s);
+
+	/* an error of a block that then completes says nothing about the
+	 * frame it carries next */
+	reset();
+	fake.tx_frames = 100;
+	CHECK(iio_conv_stream_open(itx_buf, itx_iq, 2, 4, 1, false, &iq16, &s) == 0);
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	inject.dequeue_err = -EIO;
+	CHECK(iio_conv_stream_write(s, B, 4) == -EIO);
+	inject.dequeue_err = 0;
+	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_FRAME);
+	inject.dequeue_err = -ETIMEDOUT;
+	inject.dequeue_drops = true;
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_NO_FRAME);
+	inject.dequeue_err = 0;
+	CHECK(iio_conv_stream_flush(s) == -EIO);
+	CHECK(iio_conv_stream_flush(s) == IIO_CONV_STREAM_FRAME);
+	iio_conv_stream_close(&s);
+}
+
+/* Frames are collected in the order they were written */
+static void test_tx_rotation(void)
+{
+	struct iio_conv_stream *s = NULL;
+	int k;
+
+	reset();
+	fake.tx_frames = 100;
+	CHECK(iio_conv_stream_open(itx_buf, itx_iq, 2, 4, 3, false, &iq16, &s) == 0);
+	if (!s)
+		return;
+	for (k = 0; k < 8; k++)
+		CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	iio_conv_stream_close(&s);
+	CHECK(inject.out_of_order == 0 && inject.nb_fifo == 0);
+}
+
+/* The close waits for the frames in flight under the wait policy of the
+ * stream: the fake answers a blocking and a non-blocking dequeue alike, so
+ * the calls are counted. */
+static void test_tx_close_policy(void)
+{
+	struct iio_conv_stream *s = NULL;
+	double t0, dt;
+
+	reset();
+	fake.tx_frames = 100;
+	CHECK(iio_conv_stream_open(itx_buf, itx_iq, 2, 4, 2, false, &iq16, &s) == 0);
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_FRAME);
+	iio_conv_stream_close(&s);
+	CHECK(inject.blocking == 2 && inject.polls == 0);
+
+	reset();
+	fake.tx_frames = 100;
+	CHECK(iio_conv_stream_open(itx_buf, itx_iq, 2, 4, 2, false, &iq16, &s) == 0);
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_set_timeout(s, IIO_CONV_STREAM_TIMEOUT_NONBLOCK) == 0);
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_FRAME);
+	iio_conv_stream_close(&s);
+	CHECK(inject.blocking == 0 && inject.polls == 2);
+
+	/* a time: the first frame that does not complete ends the wait */
+	reset();
+	fake.tx_frames = 0;
+	CHECK(iio_conv_stream_open(itx_buf, itx_iq, 2, 4, 2, false, &iq16, &s) == 0);
+	if (!s)
+		return;
+	CHECK(iio_conv_stream_set_timeout(s, 30) == 0);
+	CHECK(iio_conv_stream_write(s, A, 4) == IIO_CONV_STREAM_FRAME);
+	CHECK(iio_conv_stream_write(s, B, 4) == IIO_CONV_STREAM_FRAME);
+	t0 = now_s();
+	iio_conv_stream_close(&s);
+	dt = now_s() - t0;
+	CHECK(dt >= 0.030 && dt < 1.0);
+	CHECK(inject.blocking == 0 && inject.polls >= 2 && inject.out_of_order == 0);
 }
 
 static void find(const struct iio_context *c, const char *name, bool output,
@@ -739,6 +991,9 @@ int main(int argc, char **argv)
 		test_open_failures();
 		test_rx_hard_error();
 		test_rx_lost_block();
+		test_rx_rotation();
+		test_rx_eagain();
+		test_rx_requeue_fails();
 
 		test_tx_order();
 		test_tx_drain();
@@ -748,6 +1003,8 @@ int main(int argc, char **argv)
 		test_tx_start_failure();
 		test_tx_errors();
 		test_tx_lost_block();
+		test_tx_rotation();
+		test_tx_close_policy();
 	}
 
 	if (!iio_err(ictx))

@@ -29,6 +29,7 @@ struct iio_conv_stream {
 	const struct iio_channels_mask *mask; /* the one in use; belongs to bs */
 	struct iio_block **blocks;
 	bool *queued;       /* the block is with the backend, as far as we know */
+	bool *failed;       /* ... and its last dequeue failed with an errno the caller got */
 	unsigned int nb_blocks;
 	/* Blocks are used in rotation. Receive: the block queued longest ago,
 	 * the next to come back. Transmit: the block the next write fills,
@@ -94,9 +95,13 @@ static int wait_block(struct iio_conv_stream *s, unsigned int i, int timeout_ms)
 
 	if (not_ready(ret))
 		return 0;
-	if (ret < 0)
+	if (ret < 0) {
+		if (ret != -EPERM)
+			s->failed[i] = true;
 		return ret;
+	}
 	s->queued[i] = false;
+	s->failed[i] = false;
 	return 1;
 }
 
@@ -143,25 +148,32 @@ static int tx_start(struct iio_conv_stream *s)
 	return s->started ? 0 : ret;
 }
 
-/* Transmit: wait under the wait policy until block i has been sent. A block
- * libiio no longer has (-EPERM, see rx_turn()) is as free as one that was
- * sent. Returns 1, 0 or a negative errno as wait_block() does. */
+/* Transmit: wait under the wait policy until block i is free again. Returns
+ * 1, 0 or a negative errno as wait_block() does.
+ *
+ * A block libiio no longer has (-EPERM, see rx_turn()) is free, but its frame
+ * was not sent: libiio's generic block path gives the result of the transfer
+ * once, and a transfer that timed out reads as "not ready". That is -EIO
+ * here, once, unless the caller already got the error of that transfer. */
 static int tx_wait(struct iio_conv_stream *s, unsigned int i)
 {
 	int ret = wait_block(s, i, s->timeout_ms);
 
 	if (ret == -EPERM) {
+		ret = s->failed[i] ? 1 : -EIO;
 		s->queued[i] = false;
-		ret = 1;
+		s->failed[i] = false;
 	}
 	return ret;
 }
 
-/* Transmit: wait for the frames in flight, oldest first. Returns
- * IIO_CONV_STREAM_FRAME when none is left, or what tx_wait() said about the
- * first that did not complete. */
+/* Transmit: wait for the frames in flight, oldest first. Stops at the first
+ * that is not ready or fails, but goes on behind one that was lost. Returns
+ * IIO_CONV_STREAM_FRAME when all were sent, -EIO when none is left in flight
+ * but one was lost, or what tx_wait() said about the one it stopped at. */
 static int tx_drain(struct iio_conv_stream *s)
 {
+	bool lost = false;
 	unsigned int i, b;
 	int ret;
 
@@ -170,10 +182,12 @@ static int tx_drain(struct iio_conv_stream *s)
 		if (!s->queued[b])
 			continue;
 		ret = tx_wait(s, b);
-		if (ret <= 0)
+		if (ret == -EIO && !s->queued[b])
+			lost = true;
+		else if (ret <= 0)
 			return ret;
 	}
-	return IIO_CONV_STREAM_FRAME;
+	return lost ? -EIO : IIO_CONV_STREAM_FRAME;
 }
 
 /* One turn of the receive rotation: take the oldest block back, convert it
@@ -191,9 +205,11 @@ static int rx_turn(struct iio_conv_stream *s, void *dst, int timeout_ms)
 		ret = wait_block(s, b, timeout_ms);
 		if (ret == -EPERM) {
 			/* libiio does not have the block. Its generic block
-			 * path forgets a block whose dequeue timed out; the
+			 * path forgets a block once it has given the result
+			 * of the transfer, also when that was a timeout; the
 			 * block then holds no frame. */
 			s->queued[b] = false;
+			s->failed[b] = false;
 		} else if (ret <= 0) {
 			return ret;
 		} else {
@@ -311,7 +327,8 @@ int iio_conv_stream_open(struct iio_buffer *buf,
 
 	s->blocks = calloc(s->nb_blocks, sizeof(*s->blocks));
 	s->queued = calloc(s->nb_blocks, sizeof(*s->queued));
-	if (!s->blocks || !s->queued) {
+	s->failed = calloc(s->nb_blocks, sizeof(*s->failed));
+	if (!s->blocks || !s->queued || !s->failed) {
 		ret = -ENOMEM;
 		goto err_close;
 	}
@@ -394,6 +411,7 @@ void iio_conv_stream_close(struct iio_conv_stream **stream)
 	free(s->offset);
 	free(s->blocks);
 	free(s->queued);
+	free(s->failed);
 	free(s);
 }
 
@@ -460,7 +478,9 @@ int iio_conv_stream_write_typed(struct iio_conv_stream *stream, const void *src,
 
 	b = s->curr;
 	if (s->queued[b]) {
-		/* every block is in flight: wait for the oldest frame */
+		/* every block is in flight: wait for the oldest frame. If it
+		 * was lost the block is free, but the caller has to hear of
+		 * it: this frame waits for the next call. */
 		ret = tx_wait(s, b);
 		if (ret <= 0)
 			return ret;

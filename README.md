@@ -88,17 +88,19 @@ transmit complex double, both scaled to [-1, 1):
 const struct iio_channel *rx_chans[2] = { rx_i, rx_q }, *tx_chans[2] = { tx_i, tx_q };
 struct iio_conv_spec spec = { .type = IIO_CONV_F32, .complex_iq = true,
 	.scale = IIO_CONV_SCALE_FULLSCALE };
-struct iio_conv_stream *rx, *tx;
+struct iio_conv_stream *rx = NULL, *tx = NULL;
 
 /* frames of 16384 samples, 4 blocks in rotation, not cyclic */
 int ret = iio_conv_stream_open(rx_buf, rx_chans, 2, 16384, 4, false, &spec, &rx);
+if (ret < 0)
+	return ret;                           /* rx is still NULL */
 spec.type = IIO_CONV_F64;
 ret = iio_conv_stream_open(tx_buf, tx_chans, 2, 16384, 4, false, &spec, &tx);
 
 ret = iio_conv_stream_read(rx, iq);           /* 1: a frame, 0: none in time, < 0: errno */
 ret = iio_conv_stream_write(tx, wave, 16384); /* 1: queued, 0: no free block in time */
 
-iio_conv_stream_close(&tx);                   /* lets the frames in flight go out */
+iio_conv_stream_close(&tx);                   /* lets the frames in flight go out; NULL is fine */
 iio_conv_stream_close(&rx);
 ```
 
@@ -123,6 +125,11 @@ iio_conv_stream_close(&rx);
   `iio_conv_stream_flush()` waits, under the same policy, until every queued
   frame has been sent. Closing the stream does that first, so a frame written
   just before the close still goes out.
+- With a backend that has no block operations (a local device without the
+  high-speed interface, an old IIOD), libiio drops a transmit frame whose
+  transfer timed out. Write and flush then return `-EIO`, once per lost
+  frame (a flush: once for all it found); the stream goes on, and the frame
+  of the write that reported it has to be written again.
 - With `cyclic` set at open, the first frame written repeats until the stream
   is closed. One block is used, and further writes return `-EBUSY`.
 - `iio_conv_stream_set_timeout()` picks how long a call may wait for a block:
@@ -136,17 +143,23 @@ iio_conv_stream_close(&rx);
   The timeout of the context, which is shared by everything on that context,
   is never changed.
 
-The tests run the stream layer on libiio's emulation backend (`emu:`) and on
-a scripted backend (`tests/fake_backend.h`). `emu:` delivers the bytes of
+The tests run the stream layer on libiio's emulation backend (`emu:`), on a
+scripted backend (`tests/fake_backend.h`) and on a backend without block
+operations (`tests/test_stream_generic.c`). `emu:` delivers the bytes of
 `<device>_buf<n>.bin` beside the XML file as receive data, from the start
 again at its end, and replaces that file with every transmit block it gets
-back; this shows conversion, column order, the rotation of the blocks,
-partial frames and that the last frame goes out before a close. It does not
-show timing: a block is always ready, `cyclic` and non-blocking dequeues are
-ignored and cancelling does nothing. Blocks that are not ready, the three
-wait policies, cyclic transmit, failures and the order of the backend calls
-are tested on the scripted backend. The stream layer has not been run on
-hardware yet.
+back; this shows conversion, column order, the rotation of the transmit
+blocks, partial frames and that the last frame goes out before a close. It
+does not show timing or the rotation of the receive blocks: a block is always
+ready and is filled when it is taken back, whichever block it is; `cyclic`
+and non-blocking dequeues are ignored and cancelling does nothing. Blocks
+that are not ready, the three wait policies (also for the wait of a close),
+which block is waited for, cyclic transmit, failures and the order of the
+backend calls are tested on the scripted backend. The third backend makes
+libiio use its own blocks and worker thread, which fills and sends blocks
+strictly in the order they were queued and forgets a block whose transfer
+failed: frames must arrive whole and in order, and a lost transmit frame
+must be reported. The stream layer has not been run on hardware yet.
 
 ## Host array
 

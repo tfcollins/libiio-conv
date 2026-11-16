@@ -354,8 +354,12 @@ static void test_open_errors(void)
 
 	/* a frame whose size in bytes cannot be expressed */
 	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 2, SIZE_MAX / 2, 1, false, &iq16, &s) == -EINVAL);
-	/* I/Q pairing needs an even number of channels */
+	/* I/Q pairing needs an even number of channels. Found once the buffer
+	 * is open; a failed open leaves *stream as it was, whatever it was. */
+	s = (struct iio_conv_stream *)&real;
 	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 3, 4, 1, false, &iq16, &s) == -EINVAL);
+	CHECK(s == (struct iio_conv_stream *)&real);
+	s = NULL;
 	/* nothing to repeat on an input */
 	CHECK(iio_conv_stream_open(rx_buf, rx_ch, 2, 4, 1, true, &iq16, &s) == -EINVAL);
 
