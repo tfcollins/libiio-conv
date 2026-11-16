@@ -54,7 +54,7 @@ classdef ChannelsMask < iio.internal.Object
             %DESTROY Release the mask now. Any later use of it raises iio:EBADF.
             %   Calling it again, or on the mask of a buffer stream, does nothing.
             arguments
-                obj (1,1) iio.ChannelsMask
+                obj (1,1) {mustBeA(obj, "iio.ChannelsMask")}
             end
             if obj.Handle ~= 0
                 iio_mex('channels_mask_destroy', obj.Handle);
@@ -110,7 +110,7 @@ classdef ChannelsMask < iio.internal.Object
             %ENABLED State of every channel of the device in this mask.
             %   TF = ENABLED() is a 1-by-N logical; TF(k) belongs to device.channels(k).
             arguments
-                obj (1,1) iio.ChannelsMask
+                obj (1,1) {mustBeA(obj, "iio.ChannelsMask")}
             end
             tf = iio_mex('channels_mask_get', obj.Handle);
         end

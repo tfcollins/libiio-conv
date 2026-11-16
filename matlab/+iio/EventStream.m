@@ -54,7 +54,7 @@ classdef EventStream < iio.internal.Object
         function destroy(obj)
             %DESTROY Close the event stream now. A later read raises iio:EBADF.
             arguments
-                obj (1,1) iio.EventStream
+                obj (1,1) {mustBeA(obj, "iio.EventStream")}
             end
             if obj.Handle ~= 0
                 iio_mex('event_stream_destroy', obj.Handle);
@@ -70,7 +70,7 @@ classdef EventStream < iio.internal.Object
             %   EV = READ() returns at once; EV = READ(false) waits for an event. A
             %   backend that reports a timeout while waiting gives [] as well.
             arguments
-                obj (1,1) iio.EventStream
+                obj (1,1) {mustBeA(obj, "iio.EventStream")}
                 nonblock (1,1) logical = true
             end
             [tf, id, timestamp] = iio_mex('event_stream_read', obj.Handle, nonblock);
@@ -91,7 +91,7 @@ classdef EventStream < iio.internal.Object
             %   arrays when DEV has no channel that the event names.
             arguments
                 id (1,1) uint64
-                dev (1,1) iio.Device
+                dev (1,1) {mustBeA(dev, "iio.Device")}
             end
             [type, type_id] = iio_mex('event_get_type', id);
             [direction, direction_id] = iio_mex('event_get_direction', id);

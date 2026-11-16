@@ -59,7 +59,7 @@ classdef BufferStream < iio.internal.Object
             %CLOSE Stop the stream, destroy its blocks and close the buffer.
             %   Closing a closed stream does nothing.
             arguments
-                obj (1,1) iio.BufferStream
+                obj (1,1) {mustBeA(obj, "iio.BufferStream")}
             end
             if obj.Handle ~= 0
                 iio_mex('buffer_close', obj.Handle);
@@ -87,7 +87,7 @@ classdef BufferStream < iio.internal.Object
         function start(obj)
             %START Enable the buffer. At least one block must exist. Nothing when started.
             arguments
-                obj (1,1) iio.BufferStream
+                obj (1,1) {mustBeA(obj, "iio.BufferStream")}
             end
             iio_mex('buffer_stream_start', obj.Handle);
         end
@@ -95,7 +95,7 @@ classdef BufferStream < iio.internal.Object
         function stop(obj)
             %STOP Disable the buffer. Nothing when not started.
             arguments
-                obj (1,1) iio.BufferStream
+                obj (1,1) {mustBeA(obj, "iio.BufferStream")}
             end
             iio_mex('buffer_stream_stop', obj.Handle);
         end
@@ -104,7 +104,7 @@ classdef BufferStream < iio.internal.Object
             %CANCEL Make a blocked dequeue of this stream return. The stream stays started.
             %   Before blocks are queued again, call stop and then start.
             arguments
-                obj (1,1) iio.BufferStream
+                obj (1,1) {mustBeA(obj, "iio.BufferStream")}
             end
             iio_mex('buffer_stream_cancel', obj.Handle);
         end
@@ -113,7 +113,7 @@ classdef BufferStream < iio.internal.Object
             %CREATE_BLOCK An iio.Block of NBYTES bytes on this stream.
             %   NBYTES is at least sample_size; a whole number of samples is the useful choice.
             arguments
-                obj (1,1) iio.BufferStream
+                obj (1,1) {mustBeA(obj, "iio.BufferStream")}
                 nbytes (1,1) double
             end
             blk = iio.Block(obj, nbytes);

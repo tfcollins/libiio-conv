@@ -88,15 +88,9 @@ classdef tEventStream < IioTestCase
             tc.verifyEqual(ev.type, 'UNKNOWN');
             tc.verifyEqual(ev.type_id, 200);
             tc.verifyEqual(ev.channel.id, 'voltage0');
-            % not a device: refused by the argument validation, or by the gateway when
-            % MATLAB converts the value to a device without a handle
-            id = '';
-            try
-                iio.EventStream.decode(0x0001000000000000u64, 5);
-            catch err
-                id = err.identifier;
-            end
-            tc.verifyTrue(startsWith(id, 'MATLAB:') || startsWith(id, 'iio:'), id);
+            % not a device: refused by the argument validation (nothing is converted)
+            tc.verifyValidationError(@() iio.EventStream.decode(0x0001000000000000u64, 5));
+            tc.verifyValidationError(@() iio.EventStream.decode(0x0001000000000000u64, ctx));
             % a device of a context that is gone
             delete(ctx);
             tc.verifyError(@() iio.EventStream.decode(0x0001000000000000u64, phy), 'iio:EBADF');
@@ -148,6 +142,9 @@ classdef tEventStream < IioTestCase
             tc.verifyClass(none, 'double');
             tc.verifySize(none, [0 0]);
             tc.verifyTrue(isempty(es.read(false)));
+            % the backend saw each read with its flag: n = must not wait, b = may wait
+            % (read() and read(true) do not wait)
+            tc.verifyEqual(iio_mex('test_fake_log'), 'nnnb');
 
             % every stream starts with the first event
             es2 = phy.create_event_stream();

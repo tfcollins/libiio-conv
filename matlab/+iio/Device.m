@@ -90,7 +90,7 @@ classdef Device < iio.internal.Object
             %   CH = FIND_CHANNEL(NAME) looks among the input channels,
             %   CH = FIND_CHANNEL(NAME, true) among the output channels.
             arguments
-                obj (1,1) iio.Device
+                obj (1,1) {mustBeA(obj, "iio.Device")}
                 name (1,1) string
                 is_output (1,1) logical = false
             end
@@ -105,7 +105,7 @@ classdef Device < iio.internal.Object
         function a = find_attr(obj, name)
             %FIND_ATTR Device attribute of that name: an iio.Attr, or a 1-by-0 iio.Attr.
             arguments
-                obj (1,1) iio.Device
+                obj (1,1) {mustBeA(obj, "iio.Device")}
                 name (1,1) string
             end
             a = obj.attrList(iio_mex('device_find_attr', obj.Handle, char(name)));
@@ -114,7 +114,7 @@ classdef Device < iio.internal.Object
         function a = find_debug_attr(obj, name)
             %FIND_DEBUG_ATTR Debug attribute of that name: an iio.Attr, or a 1-by-0 iio.Attr.
             arguments
-                obj (1,1) iio.Device
+                obj (1,1) {mustBeA(obj, "iio.Device")}
                 name (1,1) string
             end
             a = obj.attrList(iio_mex('device_find_debug_attr', obj.Handle, char(name)));
@@ -123,7 +123,7 @@ classdef Device < iio.internal.Object
         function a = find_event_attr(obj, name)
             %FIND_EVENT_ATTR Event attribute of that name: an iio.Attr, or a 1-by-0 iio.Attr.
             arguments
-                obj (1,1) iio.Device
+                obj (1,1) {mustBeA(obj, "iio.Device")}
                 name (1,1) string
             end
             a = obj.attrList(iio_mex('device_find_event_attr', obj.Handle, char(name)));
@@ -132,8 +132,8 @@ classdef Device < iio.internal.Object
         function n = sample_size(obj, mask)
             %SAMPLE_SIZE Bytes of one sample of this device with the channels of MASK enabled.
             arguments
-                obj (1,1) iio.Device
-                mask (1,1) iio.ChannelsMask
+                obj (1,1) {mustBeA(obj, "iio.Device")}
+                mask (1,1) {mustBeA(mask, "iio.ChannelsMask")}
             end
             n = iio_mex('device_get_sample_size', obj.Handle, mask.Handle);
         end
@@ -141,7 +141,7 @@ classdef Device < iio.internal.Object
         function t = get_trigger(obj)
             %GET_TRIGGER The trigger assigned to this device: an iio.Device, or a 1-by-0 iio.Device.
             arguments
-                obj (1,1) iio.Device
+                obj (1,1) {mustBeA(obj, "iio.Device")}
             end
             h = iio_mex('device_get_trigger', obj.Handle);
             if h == 0
@@ -154,7 +154,7 @@ classdef Device < iio.internal.Object
         function set_trigger(obj, trig)
             %SET_TRIGGER Assign the trigger device TRIG to this device; [] removes the trigger.
             arguments
-                obj (1,1) iio.Device
+                obj (1,1) {mustBeA(obj, "iio.Device")}
                 trig
             end
             if isempty(trig)
@@ -170,7 +170,7 @@ classdef Device < iio.internal.Object
         function v = reg_read(obj, addr)
             %REG_READ Value (uint32) of the hardware register at address ADDR.
             arguments
-                obj (1,1) iio.Device
+                obj (1,1) {mustBeA(obj, "iio.Device")}
                 addr (1,1) {mustBeNumeric, mustBeReal}
             end
             v = iio_mex('device_reg_read', obj.Handle, addr);
@@ -179,7 +179,7 @@ classdef Device < iio.internal.Object
         function reg_write(obj, addr, value)
             %REG_WRITE Write VALUE to the hardware register at address ADDR.
             arguments
-                obj (1,1) iio.Device
+                obj (1,1) {mustBeA(obj, "iio.Device")}
                 addr (1,1) {mustBeNumeric, mustBeReal}
                 value (1,1) {mustBeNumeric, mustBeReal}
             end
@@ -189,7 +189,7 @@ classdef Device < iio.internal.Object
         function es = create_event_stream(obj)
             %CREATE_EVENT_STREAM An iio.EventStream that reads the events of this device.
             arguments
-                obj (1,1) iio.Device
+                obj (1,1) {mustBeA(obj, "iio.Device")}
             end
             es = iio.EventStream(obj);
         end

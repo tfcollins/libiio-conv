@@ -93,7 +93,7 @@ classdef Channel < iio.internal.Object
         function a = find_attr(obj, name)
             %FIND_ATTR Channel attribute of that name: an iio.Attr, or a 1-by-0 iio.Attr.
             arguments
-                obj (1,1) iio.Channel
+                obj (1,1) {mustBeA(obj, "iio.Channel")}
                 name (1,1) string
             end
             a = obj.attrList(iio_mex('channel_find_attr', obj.Handle, char(name)));
@@ -102,7 +102,7 @@ classdef Channel < iio.internal.Object
         function a = find_event_attr(obj, name)
             %FIND_EVENT_ATTR Event attribute of that name: an iio.Attr, or a 1-by-0 iio.Attr.
             arguments
-                obj (1,1) iio.Channel
+                obj (1,1) {mustBeA(obj, "iio.Channel")}
                 name (1,1) string
             end
             a = obj.attrList(iio_mex('channel_find_event_attr', obj.Handle, char(name)));
@@ -112,10 +112,14 @@ classdef Channel < iio.internal.Object
             %ENABLE Enable the channel, or every channel of a row of channels, in MASK.
             %   Only scan-element channels of the device of MASK can be enabled
             %   (iio:EINVAL otherwise). The mask of a buffer stream is read-only
-            %   (iio:EPERM).
+            %   (iio:EPERM). An empty row of channels, such as find_channel returns for
+            %   an id the device does not have, is iio:EINVAL.
             arguments
-                obj (1,:) iio.Channel
-                mask (1,1) iio.ChannelsMask
+                obj (1,:) {mustBeA(obj, "iio.Channel")}
+                mask (1,1) {mustBeA(mask, "iio.ChannelsMask")}
+            end
+            if isempty(obj)
+                error('iio:EINVAL', 'No channel to enable (did find_channel find nothing?).');
             end
             for k = 1:numel(obj)
                 iio_mex('channel_enable', obj(k).Handle, mask.Handle);
@@ -124,9 +128,13 @@ classdef Channel < iio.internal.Object
 
         function disable(obj, mask)
             %DISABLE Disable the channel, or every channel of a row of channels, in MASK.
+            %   An empty row of channels is iio:EINVAL, as for enable.
             arguments
-                obj (1,:) iio.Channel
-                mask (1,1) iio.ChannelsMask
+                obj (1,:) {mustBeA(obj, "iio.Channel")}
+                mask (1,1) {mustBeA(mask, "iio.ChannelsMask")}
+            end
+            if isempty(obj)
+                error('iio:EINVAL', 'No channel to disable (did find_channel find nothing?).');
             end
             for k = 1:numel(obj)
                 iio_mex('channel_disable', obj(k).Handle, mask.Handle);
@@ -136,8 +144,8 @@ classdef Channel < iio.internal.Object
         function tf = is_enabled(obj, mask)
             %IS_ENABLED True when the channel is enabled in MASK (a mask of the same device).
             arguments
-                obj (1,1) iio.Channel
-                mask (1,1) iio.ChannelsMask
+                obj (1,1) {mustBeA(obj, "iio.Channel")}
+                mask (1,1) {mustBeA(mask, "iio.ChannelsMask")}
             end
             tf = iio_mex('channel_is_enabled', obj.Handle, mask.Handle);
         end
@@ -146,7 +154,7 @@ classdef Channel < iio.internal.Object
             %REFRESH_FORMAT Ask the backend for the data format of the channel again.
             %   Raises iio:ENOSYS on a backend that cannot do it.
             arguments
-                obj (1,1) iio.Channel
+                obj (1,1) {mustBeA(obj, "iio.Channel")}
             end
             iio_mex('channel_refresh_format', obj.Handle);
         end
@@ -161,10 +169,10 @@ classdef Channel < iio.internal.Object
             %   DATA = READ(BLOCK, true) returns the bytes as they are in the block
             %   (uint8 column).
             %   A channel that is not enabled in the mask of the block's stream gives an
-            %   empty result.
+            %   empty (0-by-1) result of the same class.
             arguments
-                obj (1,1) iio.Channel
-                block (1,1) iio.Block
+                obj (1,1) {mustBeA(obj, "iio.Channel")}
+                block (1,1) {mustBeA(block, "iio.Block")}
                 raw (1,1) logical = false
             end
             b = iio_mex('channel_read', obj.Handle, block.Handle, raw);
@@ -177,8 +185,12 @@ classdef Channel < iio.internal.Object
                     else
                         cls = sprintf('uint%d', f.length);
                     end
-                    data = typecast(data, cls);
-                    data = data(:);
+                    if isempty(data)
+                        data = zeros(0, 1, cls);
+                    else
+                        data = typecast(data, cls);
+                        data = data(:);
+                    end
                 end
             end
         end
@@ -190,14 +202,22 @@ classdef Channel < iio.internal.Object
             %   an int16 vector for a channel stored in 16 bits. The samples are
             %   converted to the hardware format.
             %   N = WRITE(BLOCK, DATA, true) copies the bytes unchanged.
-            %   N is 0 for a channel that is not enabled in the mask of the block's stream.
+            %   Only whole samples are written: N is a multiple of the bytes of one sample
+            %   of the channel, at most what the block holds, and 0 for a channel that is
+            %   not enabled in the mask of the block's stream. No Gain, Offset or scale is
+            %   applied here: DATA holds the values the device gets (iio.Block.write and
+            %   iio.TxStream convert).
             arguments
-                obj (1,1) iio.Channel
-                block (1,1) iio.Block
+                obj (1,1) {mustBeA(obj, "iio.Channel")}
+                block (1,1) {mustBeA(block, "iio.Block")}
                 data {mustBeNumeric, mustBeReal}
                 raw (1,1) logical = false
             end
-            bytes = typecast(full(data(:)), 'uint8');
+            if isempty(data)
+                bytes = zeros(0, 1, 'uint8');
+            else
+                bytes = typecast(full(data(:)), 'uint8');
+            end
             n = iio_mex('channel_write', obj.Handle, block.Handle, bytes, raw);
         end
 
@@ -208,7 +228,7 @@ classdef Channel < iio.internal.Object
             %   column of the same length. A channel that is not a scan element has no
             %   sample format: iio:EINVAL.
             arguments
-                obj (1,1) iio.Channel
+                obj (1,1) {mustBeA(obj, "iio.Channel")}
                 raw_bytes (1,:) uint8
             end
             out = iio_mex('channel_convert', obj.Handle, raw_bytes).';
@@ -218,7 +238,7 @@ classdef Channel < iio.internal.Object
             %CONVERT_INVERSE Samples from the host format to the hardware format.
             %   OUT = CONVERT_INVERSE(HOST_BYTES): uint8 in, uint8 column out, as convert.
             arguments
-                obj (1,1) iio.Channel
+                obj (1,1) {mustBeA(obj, "iio.Channel")}
                 host_bytes (1,:) uint8
             end
             out = iio_mex('channel_convert_inverse', obj.Handle, host_bytes).';

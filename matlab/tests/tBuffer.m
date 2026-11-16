@@ -177,6 +177,19 @@ classdef tBuffer < IioTestCase
             tc.verifyError(@() buf.open(m), 'iio:EINVAL');
         end
 
+        function maskArgumentIsNotConverted(tc)
+            % open and create_stream take a mask; a device is not turned into one
+            ctx = iio.Context(tc.Fx.Uri);
+            rx = ctx.find_device("emu-rx");
+            buf = rx.buffers;
+            n = iio.internal.handle_count();
+            tc.verifyValidationError(@() buf.open(rx));
+            tc.verifyValidationError(@() buf.open(5));
+            tc.verifyValidationError(@() buf.create_stream(rx, 16));
+            tc.verifyValidationError(@() buf.create_stream(buf, 16, 2));
+            tc.verifyEqual(iio.internal.handle_count(), n);
+        end
+
         function maskIsReadOnly(tc)
             ctx = iio.Context(tc.Fx.Uri);
             rx = ctx.find_device("emu-rx");

@@ -95,6 +95,16 @@ classdef tStream < IioTestCase
             tc.verifyTrue(blk.parent == st);
         end
 
+        function cpuAccessOfStreamBlock(tc)
+            % a change through a block that belongs to the stream is refused by the gateway
+            [buf, mask] = tc.openBuffer("emu-rx", false);
+            st = iio.Stream(buf, mask, 16, 2);
+            blk = st.next();
+            tc.verifyError(@() blk.disable_cpu_access(true), 'iio:EPERM');
+            tc.verifyError(@() blk.disable_cpu_access(false), 'iio:EPERM');
+            tc.verifySize(blk.read(), [16 2]);      % still readable
+        end
+
         function bufferStreamOfBlock(tc)
             [buf, mask] = tc.openBuffer("emu-rx", false);
             st = iio.Stream(buf, mask, 16, 3);

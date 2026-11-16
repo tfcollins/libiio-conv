@@ -196,6 +196,26 @@ classdef tTxStream < IioTestCase
             tc.verifyEqual(t.Scale, 'fullscale');
         end
 
+        function gainAndOffset(tc)
+            % the device gets (DATA - Offset) / Gain, per column: the inverse of iio.RxStream
+            ctx = iio.Context(tc.Fx.Uri);
+            tx = ctx.find_device("emu-tx");
+            t = iio.TxStream(tx, ["voltage0_i", "voltage0_q"], SamplesPerFrame = 4, ...
+                NumBlocks = 1, Gain = [2 4], Offset = [10 -20]);
+            tc.verifyEqual(t.Gain, [2 4]);
+            tc.verifyEqual(t.Offset, [10 -20]);
+            tc.verifyEqual(t.write([100 100; 200 200; 300 300; 10 -20]), true);
+            tc.verifyEqual(t.flush(), true);
+            tc.verifyEqual(tc.Fx.readInt16('emu-tx_buf0.bin'), int16([45; 30; 95; 55; 145; 80; 0; 0]));
+            t.close();
+            % complex: the offset is taken from the real and from the imaginary part
+            t = iio.TxStream(tx, ["voltage0_i", "voltage0_q"], SamplesPerFrame = 4, ...
+                NumBlocks = 1, Complex = true, Gain = 2, Offset = 10);
+            tc.verifyEqual(t.write([100 + 50i; 10 + 20i; 10 + 10i; 12 + 8i]), true);
+            tc.verifyEqual(t.flush(), true);
+            tc.verifyEqual(tc.Fx.readInt16('emu-tx_buf0.bin'), int16([45; 20; 0; 5; 0; 0; 1; -1]));
+        end
+
         function multiBufferDevice(tc)
             % emu-multi: the output buffer is the second one; 12 bits in the upper part of each word
             ctx = iio.Context(tc.Fx.Uri);
@@ -230,6 +250,10 @@ classdef tTxStream < IioTestCase
             tc.verifyError(@() iio.TxStream(tx, ["voltage0_i", "voltage9"], SamplesPerFrame = 4), 'iio:ENOENT');
             tc.verifyError(@() iio.TxStream(rx, ["voltage0_i", "voltage0_q"], SamplesPerFrame = 4), 'iio:ENOENT');
             tc.verifyError(@() iio.TxStream(tx, ["voltage0_i", "voltage0_i"], SamplesPerFrame = 4), 'iio:EINVAL');
+            % the first argument is a device: a context or a channel is not converted to one
+            tc.verifyValidationError(@() iio.TxStream(ctx, ["voltage0_i", "voltage0_q"], SamplesPerFrame = 4));
+            tc.verifyValidationError(@() iio.TxStream(tx.find_channel("voltage0_i", true), "voltage0_q", ...
+                SamplesPerFrame = 4));
             tc.verifyError(@() iio.TxStream(tx, ["voltage0_i", "voltage0_q"], SamplesPerFrame = 4, Buffer = 3), ...
                 'iio:EINVAL');
             id = '';

@@ -212,6 +212,9 @@ classdef tRxStream < IioTestCase
                 Scale = "iio", Raw = true), 'iio:EINVAL');
             tc.verifyError(@() iio.RxStream(rx, ["voltage0_i", "voltage0_q", "voltage1_i"], ...
                 SamplesPerFrame = 8, Complex = true), 'iio:EINVAL');
+            % every block is created when the stream opens: at most 4096
+            tc.verifyError(@() iio.RxStream(rx, ["voltage0_i", "voltage0_q"], SamplesPerFrame = 8, ...
+                NumBlocks = 4097), 'iio:EINVAL');
             % a failed open leaves at most the buffer of the device registered, never a stream
             tc.verifyLessThanOrEqual(iio.internal.handle_count(), n + 1);
             r = iio.RxStream(rx, ["voltage0_i", "voltage0_q"], SamplesPerFrame = 8);
@@ -222,6 +225,9 @@ classdef tRxStream < IioTestCase
             ctx = iio.Context(tc.Fx.Uri);
             rx = ctx.find_device("emu-rx");
             tc.verifyError(@() iio.RxStream(rx, ["voltage0_i", "voltage9"], SamplesPerFrame = 8), 'iio:ENOENT');
+            % the first argument is a device: a context or a string is not converted to one
+            tc.verifyValidationError(@() iio.RxStream(ctx, ["voltage0_i", "voltage0_q"], SamplesPerFrame = 8));
+            tc.verifyValidationError(@() iio.RxStream("emu-rx", ["voltage0_i", "voltage0_q"], SamplesPerFrame = 8));
             % an output channel id on a receive stream is unknown as well
             tx = ctx.find_device("emu-tx");
             tc.verifyError(@() iio.RxStream(tx, ["voltage0_i", "voltage0_q"], SamplesPerFrame = 8), 'iio:ENOENT');

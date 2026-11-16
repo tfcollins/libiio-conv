@@ -3,6 +3,12 @@ classdef EmuFixture < matlab.unittest.fixtures.Fixture
     %   The directory holds a copy of tests/resources/iio_fixture.xml and the receive data
     %   file emu-rx_buf0.bin (the ramp of EmuFixture.rampWords(4096)). It is removed at
     %   teardown.
+    %
+    %   A frame or block read from emu must not be longer than that file: 16384 bytes,
+    %   which is SamplesPerFrame = 4096 with two channels and 2048 with four. The emu
+    %   backend fills a longer block only in part and still reports it as valid (the
+    %   rest is not data). Every test therefore passes SamplesPerFrame; the default of
+    %   iio.RxStream, 32768, is for hardware.
 
     properties (SetAccess = private)
         Dir = ''        % char: the temporary directory (absolute)

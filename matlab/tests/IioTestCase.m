@@ -26,5 +26,18 @@ classdef (Abstract) IioTestCase < matlab.unittest.TestCase
             %VERIFYIIOERROR FCN must throw the identifier "iio:<errnoName>".
             tc.verifyError(fcn, char("iio:" + errnoName));
         end
+
+        function verifyValidationError(tc, fcn)
+            %VERIFYVALIDATIONERROR FCN must throw an identifier that starts with "MATLAB:".
+            %   That is an error of the arguments block, raised before any gateway call
+            %   (verifyError would need the exact identifier).
+            id = '';
+            try
+                fcn();
+            catch err
+                id = err.identifier;
+            end
+            tc.verifyTrue(startsWith(id, 'MATLAB:'), ['identifier: ' id]);
+        end
     end
 end

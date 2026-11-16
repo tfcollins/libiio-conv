@@ -58,7 +58,7 @@ classdef Buffer < iio.internal.Object
         function a = find_attr(obj, name)
             %FIND_ATTR Buffer attribute of that name: an iio.Attr, or a 1-by-0 iio.Attr.
             arguments
-                obj (1,1) iio.Buffer
+                obj (1,1) {mustBeA(obj, "iio.Buffer")}
                 name (1,1) string
             end
             a = obj.attrList(iio_mex('buffer_find_attr', obj.Handle, char(name)));
@@ -69,8 +69,8 @@ classdef Buffer < iio.internal.Object
             %   The stream keeps its own copy of the mask; its mask property tells which
             %   channels the hardware really enabled.
             arguments
-                obj (1,1) iio.Buffer
-                mask (1,1) iio.ChannelsMask
+                obj (1,1) {mustBeA(obj, "iio.Buffer")}
+                mask (1,1) {mustBeA(mask, "iio.ChannelsMask")}
             end
             bs = iio.BufferStream(obj, mask);
         end
@@ -81,8 +81,8 @@ classdef Buffer < iio.internal.Object
             %   samples each; ST = CREATE_STREAM(MASK, SAMPLES_COUNT, NB_BLOCKS) uses
             %   NB_BLOCKS blocks.
             arguments
-                obj (1,1) iio.Buffer
-                mask (1,1) iio.ChannelsMask
+                obj (1,1) {mustBeA(obj, "iio.Buffer")}
+                mask (1,1) {mustBeA(mask, "iio.ChannelsMask")}
                 samples_count (1,1) double
                 nb_blocks (1,1) double = 4
             end

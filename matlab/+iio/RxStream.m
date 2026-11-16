@@ -19,11 +19,13 @@ classdef RxStream < iio.internal.Object
     %                         of the channel (its scale and offset applied);
     %                         "fullscale": -1 to 1. "iio" and "fullscale" need
     %                         OutputDataType "double" or "single".
-    %       Gain, Offset      a scalar, or one value per column: DATA * Gain + Offset,
-    %                         for "double" and "single" only (default: none)
+    %       Gain, Offset      a scalar, or one value per column, for "double" and
+    %                         "single" only: the frame holds sample * Gain + Offset.
+    %                         With Complex the Offset is added to the real and to the
+    %                         imaginary part alike (default: none)
     %       Raw               true: the storage words as they are, without shift,
     %                         mask and sign extension (default false)
-    %       NumBlocks         blocks that capture in turn (default 2)
+    %       NumBlocks         blocks that capture in turn (default 2, at most 4096)
     %       Timeout           how long read waits, in ms. -1 (default): as long as the
     %                         timeout of the context allows; 0: not at all
     %       Buffer            position of the buffer of DEV, counted from 0. -1
@@ -56,7 +58,7 @@ classdef RxStream < iio.internal.Object
     methods
         function obj = RxStream(dev, channels, opts)
             arguments
-                dev (1,1) iio.Device
+                dev (1,1) {mustBeA(dev, "iio.Device")}
                 channels                      % string array / cellstr / char of channel ids, or iio.Channel array;
                                               % column order; with Complex: I then Q of each column
                 opts.SamplesPerFrame (1,1) double {mustBeInteger, mustBePositive} = 32768

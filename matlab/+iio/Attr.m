@@ -58,7 +58,7 @@ classdef Attr < iio.internal.Object
             %   not UTF-8 text is not preserved (invalid bytes become char(65533)): read_raw
             %   returns the bytes.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
             end
             s = iio_mex('attr_read_raw', obj.Handle);
         end
@@ -68,7 +68,7 @@ classdef Attr < iio.internal.Object
             %   Device, channel and buffer attributes include the terminating zero byte;
             %   context attributes do not.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
             end
             b = iio_mex('attr_read_raw', obj.Handle, true);
         end
@@ -76,7 +76,7 @@ classdef Attr < iio.internal.Object
         function tf = read_bool(obj)
             %READ_BOOL Value of the attribute as a logical scalar.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
             end
             tf = iio_mex('attr_read_bool', obj.Handle);
         end
@@ -84,7 +84,7 @@ classdef Attr < iio.internal.Object
         function v = read_longlong(obj)
             %READ_LONGLONG Value of the attribute as an int64 scalar.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
             end
             v = iio_mex('attr_read_longlong', obj.Handle);
         end
@@ -92,7 +92,7 @@ classdef Attr < iio.internal.Object
         function v = read_double(obj)
             %READ_DOUBLE Value of the attribute as a double scalar.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
             end
             v = iio_mex('attr_read_double', obj.Handle);
         end
@@ -105,7 +105,7 @@ classdef Attr < iio.internal.Object
             %                       write_longlong (2400000000 is sent as "2400000000")
             %   anything else       write_double
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
                 v
             end
             if ischar(v) || isstring(v)
@@ -125,7 +125,7 @@ classdef Attr < iio.internal.Object
             %WRITE_RAW Write bytes; N = WRITE_RAW(DATA) is the number of bytes written.
             %   Every element of DATA is sent, zero bytes included.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
                 data (1,:) uint8
             end
             n = iio_mex('attr_write_raw', obj.Handle, data);
@@ -136,7 +136,7 @@ classdef Attr < iio.internal.Object
             %   Text that contains a zero character (char(0)) raises iio:EINVAL: binary data
             %   is written with write_raw.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
                 s (1,1) string
             end
             iio_mex('attr_write_string', obj.Handle, char(s));
@@ -145,7 +145,7 @@ classdef Attr < iio.internal.Object
         function write_bool(obj, tf)
             %WRITE_BOOL Write true or false.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
                 tf (1,1) logical
             end
             iio_mex('attr_write_bool', obj.Handle, tf);
@@ -156,7 +156,7 @@ classdef Attr < iio.internal.Object
             %   V is a real numeric scalar. An int64 or uint64 value is sent exactly; a value
             %   that is not a whole number, or is outside the range of int64, raises iio:EINVAL.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
                 v (1,1) {mustBeNumeric, mustBeReal}
             end
             iio_mex('attr_write_longlong', obj.Handle, v);
@@ -173,7 +173,7 @@ classdef Attr < iio.internal.Object
             %   decimals is sent with an exponent, which kernel drivers refuse.
             %   NaN and Inf raise iio:EINVAL.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
                 v (1,1) double
                 opts.Exact (1,1) logical = true
             end
@@ -183,7 +183,7 @@ classdef Attr < iio.internal.Object
         function r = get_range(obj)
             %GET_RANGE [min step max] of an "_available" attribute that holds a range.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
             end
             r = iio_mex('attr_get_range', obj.Handle);
         end
@@ -191,7 +191,7 @@ classdef Attr < iio.internal.Object
         function c = get_available(obj)
             %GET_AVAILABLE 1-by-N cell of char: the values of an "_available" attribute that holds a list.
             arguments
-                obj (1,1) iio.Attr
+                obj (1,1) {mustBeA(obj, "iio.Attr")}
             end
             c = iio_mex('attr_get_available', obj.Handle);
         end

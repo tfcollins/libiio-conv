@@ -86,7 +86,7 @@ classdef Stream < iio.internal.Object
         function blk = next(obj)
             %NEXT The next iio.Block of the stream; valid until the next call to next().
             arguments
-                obj (1,1) iio.Stream
+                obj (1,1) {mustBeA(obj, "iio.Stream")}
             end
             blk = iio.Block(obj, iio_mex('stream_get_next_block', obj.Handle));
         end
@@ -94,7 +94,7 @@ classdef Stream < iio.internal.Object
         function cancel(obj)
             %CANCEL Cancel the I/O of the stream: a blocked or later next() fails.
             arguments
-                obj (1,1) iio.Stream
+                obj (1,1) {mustBeA(obj, "iio.Stream")}
             end
             iio_mex('stream_cancel', obj.Handle);
         end
@@ -104,7 +104,7 @@ classdef Stream < iio.internal.Object
             %   On an output buffer the queued blocks are sent first, unless the timeout of
             %   the context is Inf: then they are cancelled.
             arguments
-                obj (1,1) iio.Stream
+                obj (1,1) {mustBeA(obj, "iio.Stream")}
             end
             if obj.Handle ~= 0
                 iio_mex('stream_destroy', obj.Handle);

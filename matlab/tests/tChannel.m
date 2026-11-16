@@ -255,6 +255,43 @@ classdef tChannel < IioTestCase
             tc.verifyError(@() iio.ChannelsMask(ctx), 'iio:EINVAL');
         end
 
+        function maskArgumentIsNotConverted(tc)
+            % A method that takes a mask refuses everything else. MATLAB must not turn
+            % a device into iio.ChannelsMask(dev), a new and empty mask, and work on that.
+            ctx = iio.Context(tc.Fx.Uri);
+            rx = ctx.find_device("emu-rx");
+            v0i = rx.find_channel("voltage0_i");
+            mask = iio.ChannelsMask(rx);
+            v0i.enable(mask);
+            n = iio.internal.handle_count();
+            tc.verifyValidationError(@() v0i.enable(rx));
+            tc.verifyValidationError(@() v0i.disable(rx));
+            tc.verifyValidationError(@() v0i.is_enabled(rx));
+            tc.verifyValidationError(@() rx.sample_size(rx));
+            tc.verifyValidationError(@() v0i.is_enabled(5));
+            tc.verifyValidationError(@() v0i.enable("mask"));
+            tc.verifyValidationError(@() rx.sample_size(v0i));
+            tc.verifyValidationError(@() v0i.disable([mask mask]));    % one mask
+            tc.verifyEqual(iio.internal.handle_count(), n);
+            tc.verifyEqual(mask.enabled(), [true false false false false]);
+            tc.verifyEqual(rx.sample_size(mask), 2);
+            tc.verifyEqual(v0i.is_enabled(mask), true);
+        end
+
+        function enableNoChannel(tc)
+            % find_channel of an id the device does not have gives a 1-by-0 row:
+            % enabling "it" is an error, not a silent nothing
+            ctx = iio.Context(tc.Fx.Uri);
+            rx = ctx.find_device("emu-rx");
+            mask = iio.ChannelsMask(rx);
+            typo = rx.find_channel("voltage9");
+            tc.verifySize(typo, [1 0]);
+            tc.verifyError(@() typo.enable(mask), 'iio:EINVAL');
+            tc.verifyError(@() typo.disable(mask), 'iio:EINVAL');
+            tc.verifyError(@() enable(iio.Channel.empty(1, 0), mask), 'iio:EINVAL');
+            tc.verifyEqual(mask.enabled(), [false false false false false]);
+        end
+
         function maskDestroyTwice(tc)
             ctx = iio.Context(tc.Fx.Uri);
             rx = ctx.find_device("emu-rx");

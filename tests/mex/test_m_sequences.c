@@ -389,6 +389,17 @@ static void fake_tx_events_trigger(void)
 	CHECK(mt_u64_of("event_get_channel", 3, mt_u64(0x0001000000000000u), mt_u64(phy), mt_bool(true)) == 0);
 	for (int i = 0; i < 3; i++)
 		mxDestroyArray(out[i]);
+	/* tEventStream.readFake: es.read(true), es.read() without an event, es.read(false); the
+	 * backend saw the flag of each read */
+	CHECK(mt_bool_of("event_stream_read", 2, mt_u64(es), mt_bool(true)));
+	CHECK(!mt_bool_of("event_stream_read", 2, mt_u64(es), mt_bool(true)));
+	CHECK(!mt_bool_of("event_stream_read", 2, mt_u64(es), mt_bool(false)));
+	{
+		const char *log = mt_str_of("test_fake_log", 0);
+		size_t len = log ? strlen(log) : 0;
+
+		CHECK(len >= 4 && !strcmp(log + len - 4, "nnnb"));
+	}
 
 	/* tDeviceLowLevel.triggerFake */
 	trg = find_dev(ctx, "trigger0");
@@ -425,6 +436,10 @@ static void stream_views(uint64_t ctx)
 	CHECK(mt_dbl_of("block_size", 1, mt_u64(a)) == 64);
 	CHECK(block_is_ramp(a, 16, 0));
 	CHECK(block_is_ramp(a, 16, 0));         /* again: the cached converter */
+	/* tStream.cpuAccessOfStreamBlock */
+	CHECK(mt_raises("iio:EPERM", "block_disable_cpu_access", 2, mt_u64(a), mt_bool(true)));
+	CHECK(mt_raises("iio:EPERM", "block_disable_cpu_access", 2, mt_u64(a), mt_bool(false)));
+	CHECK(block_is_ramp(a, 16, 0));
 
 	/* blk.buffer_stream, bs.sample_size, bs.mask, bs.started, bs.start(), delete(bs) */
 	bsv = mt_u64_of("block_get_buffer_stream", 1, mt_u64(a));
@@ -617,6 +632,141 @@ static void buffer_blocks(uint64_t ctx)
 	mt_ok("buffer_close", 1, mt_u64(bs));
 }
 
+/* m-by-n double, real or complex, from the values in storage order (re, im interleaved) */
+static mxArray *dmat(size_t m, size_t n, bool cplx, const double *v)
+{
+	mxArray *a = mxCreateDoubleMatrix(m, n, cplx ? mxCOMPLEX : mxREAL);
+
+	memcpy(mxGetData(a), v, m * n * (cplx ? 2 : 1) * sizeof(*v));
+	return a;
+}
+
+/* block_read(blk, opts) is an m-by-n array of that class and complexity with these bytes */
+static bool read_is(uint64_t blk, mxArray *o, mxClassID cls, bool cplx, size_t m, size_t n,
+		const void *want, size_t bytes)
+{
+	mxArray *out[1] = { NULL };
+	bool ok;
+
+	if (mt_call(1, out, "block_read", 2, mt_u64(blk), o) || !out[0])
+		return false;
+	ok = mxGetClassID(out[0]) == cls && mxIsComplex(out[0]) == cplx && mxGetM(out[0]) == m &&
+		mxGetN(out[0]) == n && !memcmp(mxGetData(out[0]), want, bytes);
+	mxDestroyArray(out[0]);
+	return ok;
+}
+
+/* tTxStream.gainAndOffset, tBlock.writeGainOffset, tBlock.argumentsAreNotConverted (the part
+ * that reaches the gateway) and the empty result of tBlock.channelRead: on transmit the device
+ * gets (data - offset) / gain */
+static void gain_and_offset(uint64_t ctx)
+{
+	static const double g24[2] = { 2, 4 }, o1020[2] = { 10, -20 };
+	static const double real42[8] = { 100, 200, 300, 10, 100, 200, 300, -20 };  /* [100 100; 200 200; 300 300; 10 -20] */
+	static const double cplx41[8] = { 100, 50, 10, 20, 10, 10, 12, 8 };
+	static const double real22[4] = { 100, 200, 100, 200 };                    /* [100 100; 200 200] */
+	static const double cplx21[4] = { 100, 50, 10, 20 };
+	static const int16_t sent_real[8] = { 45, 30, 95, 55, 145, 80, 0, 0 };
+	static const int16_t sent_cplx[8] = { 45, 20, 0, 5, 0, 0, 1, -1 };
+	static const int16_t blk_real[4] = { 45, 95, 30, 55 };                     /* int16([45 30; 95 55]) */
+	static const int16_t blk_cplx[4] = { 45, 0, 20, 5 };                       /* int16([45 20; 0 5]) */
+	mxArray *out[1] = { NULL }, *two;
+	uint64_t tx, rx, cs, buf, mask, bs, blk, v0i, v0q, v2;
+
+	/* t = iio.TxStream(tx, [...], SamplesPerFrame = 4, NumBlocks = 1, Gain = [2 4], Offset = [10 -20]) */
+	tx = find_dev(ctx, "emu-tx");
+	cs = mt_u64_of("conv_stream_open", 3, mt_u64(tx), iq0(), opts(11, "output", mt_bool(true),
+		"buffer", mt_dbl(-1), "samples", mt_dbl(4), "nb_blocks", mt_dbl(1), "cyclic", mt_bool(false),
+		"complex", mt_bool(false), "scale", mt_str("none"), "raw", mt_bool(false),
+		"gain", dmat(1, 2, false, g24), "offset", dmat(1, 2, false, o1020), "timeout_ms", mt_dbl(-1)));
+	CHECK(cs != 0);
+	CHECK(mt_bool_of("conv_stream_write", 2, mt_u64(cs), dmat(4, 2, false, real42)));
+	CHECK(mt_bool_of("conv_stream_flush", 1, mt_u64(cs)));
+	CHECK(file_is("emu-tx_buf0.bin", 8, sent_real));
+	mt_ok("conv_stream_close", 1, mt_u64(cs));
+	/* Complex = true, Gain = 2, Offset = 10 */
+	cs = mt_u64_of("conv_stream_open", 3, mt_u64(tx), iq0(), opts(11, "output", mt_bool(true),
+		"buffer", mt_dbl(-1), "samples", mt_dbl(4), "nb_blocks", mt_dbl(1), "cyclic", mt_bool(false),
+		"complex", mt_bool(true), "scale", mt_str("none"), "raw", mt_bool(false),
+		"gain", mt_dbl(2), "offset", mt_dbl(10), "timeout_ms", mt_dbl(-1)));
+	CHECK(cs != 0);
+	CHECK(mt_bool_of("conv_stream_write", 2, mt_u64(cs), dmat(4, 1, true, cplx41)));
+	CHECK(mt_bool_of("conv_stream_flush", 1, mt_u64(cs)));
+	CHECK(file_is("emu-tx_buf0.bin", 8, sent_cplx));
+	mt_ok("conv_stream_close", 1, mt_u64(cs));
+
+	/* openTx of tBlock.m; blk.write([100 100; 200 200], Gain = [2 4], Offset = [10 -20]) */
+	v0i = find_chn(tx, "voltage0_i", true);
+	v0q = find_chn(tx, "voltage0_q", true);
+	mask = mt_u64_of("create_channels_mask", 1, mt_u64(tx));
+	mt_ok("channel_enable", 2, mt_u64(v0i), mt_u64(mask));
+	mt_ok("channel_enable", 2, mt_u64(v0q), mt_u64(mask));
+	buf = buf0(tx);
+	bs = mt_u64_of("buffer_open", 2, mt_u64(buf), mt_u64(mask));
+	mt_ok("channels_mask_destroy", 1, mt_u64(mask));
+	blk = mt_u64_of("buffer_stream_create_block", 2, mt_u64(bs), mt_dbl(8));
+	CHECK(mt_dbl_of("block_write", 3, mt_u64(blk), dmat(2, 2, false, real22),
+		opts(6, "channels", no_ids(), "complex", mt_bool(false), "scale", mt_str("none"),
+		"raw", mt_bool(false), "gain", dmat(1, 2, false, g24), "offset", dmat(1, 2, false, o1020))) == 2);
+	CHECK(read_is(blk, read_opts("int16", false), mxINT16_CLASS, false, 2, 2, blk_real, sizeof(blk_real)));
+	CHECK(read_is(blk, opts(8, "channels", no_ids(), "class", mt_str("double"), "complex", mt_bool(false),
+		"scale", mt_str("none"), "raw", mt_bool(false), "gain", dmat(1, 2, false, g24),
+		"offset", dmat(1, 2, false, o1020), "samples", none()),
+		mxDOUBLE_CLASS, false, 2, 2, real22, sizeof(real22)));
+	/* blk.write([100 + 50i; 10 + 20i], Gain = 2, Offset = 10): Complex is ~isreal(data) */
+	CHECK(mt_dbl_of("block_write", 3, mt_u64(blk), dmat(2, 1, true, cplx21),
+		opts(6, "channels", no_ids(), "complex", mt_bool(true), "scale", mt_str("none"),
+		"raw", mt_bool(false), "gain", mt_dbl(2), "offset", mt_dbl(10))) == 2);
+	CHECK(read_is(blk, read_opts("int16", false), mxINT16_CLASS, false, 2, 2, blk_cplx, sizeof(blk_cplx)));
+	CHECK(read_is(blk, opts(8, "channels", no_ids(), "class", mt_str("double"), "complex", mt_bool(true),
+		"scale", mt_str("none"), "raw", mt_bool(false), "gain", mt_dbl(2), "offset", mt_dbl(10),
+		"samples", none()), mxDOUBLE_CLASS, true, 2, 1, cplx21, sizeof(cplx21)));
+	mt_ok("block_enqueue", 3, mt_u64(blk), mt_dbl(8), mt_bool(false));
+	mt_ok("buffer_stream_start", 1, mt_u64(bs));
+	CHECK(mt_bool_of("block_dequeue", 2, mt_u64(blk), mt_bool(false)));
+	CHECK(file_is("emu-tx_buf0.bin", 4, sent_cplx));
+	mt_ok("buffer_close", 1, mt_u64(bs));
+
+	/* rxBlock of tBlock.m; a channel twice; v2.read(blk) of a channel that is not enabled */
+	rx = find_dev(ctx, "emu-rx");
+	v0i = find_chn(rx, "voltage0_i", false);
+	v0q = find_chn(rx, "voltage0_q", false);
+	v2 = find_chn(rx, "voltage2", false);
+	mask = mt_u64_of("create_channels_mask", 1, mt_u64(rx));
+	mt_ok("channel_enable", 2, mt_u64(v0i), mt_u64(mask));
+	mt_ok("channel_enable", 2, mt_u64(v0q), mt_u64(mask));
+	buf = buf0(rx);
+	bs = mt_u64_of("buffer_open", 2, mt_u64(buf), mt_u64(mask));
+	mt_ok("channels_mask_destroy", 1, mt_u64(mask));
+	blk = mt_u64_of("buffer_stream_create_block", 2, mt_u64(bs), mt_dbl(32));
+	mt_ok("block_enqueue", 3, mt_u64(blk), mt_dbl(0), mt_bool(false));
+	mt_ok("buffer_stream_start", 1, mt_u64(bs));
+	CHECK(mt_bool_of("block_dequeue", 2, mt_u64(blk), mt_bool(false)));
+	two = mxCreateNumericMatrix(1, 2, mxUINT64_CLASS, mxREAL);
+	((uint64_t *)mxGetData(two))[0] = ((uint64_t *)mxGetData(two))[1] = v0i;
+	CHECK(mt_raises("iio:EINVAL", "block_read", 2, mt_u64(blk), opts(8, "channels", two,
+		"class", mt_str("double"), "complex", mt_bool(false), "scale", mt_str("none"),
+		"raw", mt_bool(false), "gain", none(), "offset", none(), "samples", none())));
+	two = mxCreateNumericMatrix(1, 2, mxUINT64_CLASS, mxREAL);
+	((uint64_t *)mxGetData(two))[0] = ((uint64_t *)mxGetData(two))[1] = v0i;
+	{
+		mxArray *d = mxCreateNumericMatrix(1, 2, mxINT16_CLASS, mxREAL);
+
+		((int16_t *)mxGetData(d))[0] = 1;
+		((int16_t *)mxGetData(d))[1] = 2;
+		CHECK(mt_raises("iio:EINVAL", "block_write", 3, mt_u64(blk), d, opts(6, "channels", two,
+			"complex", mt_bool(false), "scale", mt_str("none"), "raw", mt_bool(false),
+			"gain", none(), "offset", none())));
+	}
+	CHECK(block_is_ramp(blk, 8, 0));
+	for (int raw = 0; raw < 2; raw++) {
+		CHECK(mt_call(1, out, "channel_read", 3, mt_u64(v2), mt_u64(blk), mt_bool(raw)) == 0);
+		CHECK(out[0] && mxGetClassID(out[0]) == mxUINT8_CLASS && mxGetNumberOfElements(out[0]) == 0);
+		mxDestroyArray(out[0]);
+	}
+	mt_ok("buffer_close", 1, mt_u64(bs));
+}
+
 /* tChannel.maskRoundTrip, tDeviceLowLevel on emu, the handle counts of tRxStream.closeTwiceAndDelete */
 static void masks_and_lowlevel(uint64_t ctx)
 {
@@ -732,6 +882,7 @@ int main(int argc, char **argv)
 	stream_views(ctx);
 	stream_tx(ctx);
 	buffer_blocks(ctx);
+	gain_and_offset(ctx);
 	masks_and_lowlevel(ctx);
 	mt_ok("context_destroy", 1, mt_u64(ctx));
 	CHECK(gw_handle_count() == 0);

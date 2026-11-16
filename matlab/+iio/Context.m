@@ -108,7 +108,7 @@ classdef Context < iio.internal.Object
         function dev = find_device(obj, name)
             %FIND_DEVICE Device with that id, label or name: an iio.Device, or a 1-by-0 iio.Device.
             arguments
-                obj (1,1) iio.Context
+                obj (1,1) {mustBeA(obj, "iio.Context")}
                 name (1,1) string
             end
             h = iio_mex('context_find_device', obj.Handle, char(name));
@@ -122,7 +122,7 @@ classdef Context < iio.internal.Object
         function a = find_attr(obj, name)
             %FIND_ATTR Context attribute of that name: an iio.Attr, or a 1-by-0 iio.Attr.
             arguments
-                obj (1,1) iio.Context
+                obj (1,1) {mustBeA(obj, "iio.Context")}
                 name (1,1) string
             end
             h = iio_mex('context_find_attr', obj.Handle, char(name));
@@ -140,7 +140,7 @@ classdef Context < iio.internal.Object
             %   iio.Context.TIMEOUT_NONBLOCK (never wait). It applies to attribute I/O and to
             %   every stream of this context.
             arguments
-                obj (1,1) iio.Context
+                obj (1,1) {mustBeA(obj, "iio.Context")}
                 timeout (1,1) double
             end
             iio_mex('context_set_timeout', obj.Handle, iio.internal.timeout_ms(timeout));
@@ -149,7 +149,7 @@ classdef Context < iio.internal.Object
         function ping(obj)
             %PING Check that the context still answers; throws when it does not.
             arguments
-                obj (1,1) iio.Context
+                obj (1,1) {mustBeA(obj, "iio.Context")}
             end
             iio_mex('context_ping', obj.Handle);
         end

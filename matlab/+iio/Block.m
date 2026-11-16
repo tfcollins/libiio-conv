@@ -5,6 +5,10 @@ classdef Block < iio.internal.Object
     %   least BS.sample_size. A block of an iio.Stream is returned by its next method and
     %   belongs to that stream.
     %
+    %   NBYTES must not be of class uint64 here: a uint64 second argument is the
+    %   internal form that wraps a gateway handle, and the block it gives raises
+    %   iio:EBADF at its first use. BS.create_block(NBYTES) takes any numeric class.
+    %
     %   Receive:   blk.enqueue(); bs.start(); blk.dequeue(); data = blk.read();
     %   Transmit:  n = blk.write(data); blk.enqueue(n * bs.sample_size); bs.start();
     %              blk.dequeue();
@@ -56,7 +60,7 @@ classdef Block < iio.internal.Object
         function destroy(obj)
             %DESTROY Destroy the block now; any later use of it raises iio:EBADF.
             arguments
-                obj (1,1) iio.Block
+                obj (1,1) {mustBeA(obj, "iio.Block")}
             end
             if obj.Handle ~= 0
                 iio_mex('block_destroy', obj.Handle);
@@ -89,7 +93,7 @@ classdef Block < iio.internal.Object
             %   first BYTES_USED bytes (0 = the whole block). ENQUEUE(BLK, BYTES_USED, true)
             %   queues it for cyclic transmission; a cyclic block is never dequeued.
             arguments
-                obj (1,1) iio.Block
+                obj (1,1) {mustBeA(obj, "iio.Block")}
                 bytes_used (1,1) {mustBeNumeric, mustBeReal} = 0
                 cyclic (1,1) logical = false
             end
@@ -103,7 +107,7 @@ classdef Block < iio.internal.Object
             %   block stays enqueued. TF = DEQUEUE(BLK, true) does not wait: false means
             %   "not ready yet".
             arguments
-                obj (1,1) iio.Block
+                obj (1,1) {mustBeA(obj, "iio.Block")}
                 nonblock (1,1) logical = false
             end
             tf = iio_mex('block_dequeue', obj.Handle, nonblock);
@@ -123,11 +127,14 @@ classdef Block < iio.internal.Object
             %                       floating-point OutputDataType
             %       Raw             true: the storage word as it is, without shift and
             %                       sign extension
-            %       Gain, Offset    a scalar or one value per column: value * Gain + Offset
+            %       Gain, Offset    a scalar or one value per column, for OutputDataType
+            %                       "double" and "single": sample * Gain + Offset. With
+            %                       Complex the Offset is added to the real and to the
+            %                       imaginary part alike.
             %       Samples         at most this many rows (default: all the block holds)
             arguments
-                obj (1,1) iio.Block
-                opts.Channels (1,:) iio.Channel = iio.Channel.empty(1, 0)
+                obj (1,1) {mustBeA(obj, "iio.Block")}
+                opts.Channels (1,:) {mustBeA(opts.Channels, "iio.Channel")} = iio.Channel.empty(1, 0)
                 opts.OutputDataType (1,1) string = "double"
                 opts.Complex (1,1) logical = false
                 opts.Scale (1,1) string = "none"
@@ -148,17 +155,25 @@ classdef Block < iio.internal.Object
             %   N = WRITE(BLK, DATA) converts the numeric matrix DATA, one column per
             %   enabled channel (per I/Q pair when DATA is complex), into the block. N is
             %   the smaller of the rows of DATA and the samples the block holds; pass
-            %   N * sample_size to enqueue. Name-value options: Channels, Scale, Raw, Gain,
-            %   Offset as for READ, and
+            %   N * sample_size to enqueue. Name-value options: Channels, Scale and Raw as
+            %   for READ, and
+            %       Gain, Offset   a scalar or one value per column, for DATA of class
+            %                 double or single. The block gets (DATA - Offset) / Gain, the
+            %                 exact inverse of READ: with Gain = 2 and Offset = 10 the
+            %                 value 100 is stored as (100 - 10) / 2 = 45, and READ with
+            %                 the same options returns 100. With Complex the Offset is
+            %                 taken from the real and from the imaginary part alike.
             %       Complex   true: a column is an I/Q pair. The default is ~isreal(DATA).
             %                 With real DATA the Q channels are written as zero: say
             %                 Complex=true when the data is complex by nature, because a
             %                 complex array whose imaginary part is all zero may arrive
-            %                 as a real one.
+            %                 as a real one. The channels must be I/Q pairs either way.
+            %   A channel may be listed once only in Channels (iio:EINVAL otherwise), in
+            %   READ as well.
             arguments
-                obj (1,1) iio.Block
+                obj (1,1) {mustBeA(obj, "iio.Block")}
                 data
-                opts.Channels (1,:) iio.Channel = iio.Channel.empty(1, 0)
+                opts.Channels (1,:) {mustBeA(opts.Channels, "iio.Channel")} = iio.Channel.empty(1, 0)
                 opts.Complex (1,1) logical
                 opts.Scale (1,1) string = "none"
                 opts.Raw (1,1) logical = false
@@ -182,7 +197,7 @@ classdef Block < iio.internal.Object
             %   from the 0-based byte OFFSET to the end, B = BYTES(BLK, OFFSET, COUNT)
             %   COUNT bytes from OFFSET.
             arguments
-                obj (1,1) iio.Block
+                obj (1,1) {mustBeA(obj, "iio.Block")}
                 offset (1,1) {mustBeNumeric, mustBeReal} = 0
                 count {mustBeNumeric, mustBeReal} = []
             end
@@ -194,7 +209,7 @@ classdef Block < iio.internal.Object
             %SET_BYTES Copy the uint8 vector B into the block at the 0-based byte OFFSET (default 0).
             %   Returns the number of bytes copied. B must fit the block.
             arguments
-                obj (1,1) iio.Block
+                obj (1,1) {mustBeA(obj, "iio.Block")}
                 b
                 offset (1,1) {mustBeNumeric, mustBeReal} = 0
             end
@@ -205,8 +220,8 @@ classdef Block < iio.internal.Object
             %FIRST Byte offset of the first sample of channel CH in the block.
             %   Equals nbytes when CH is not enabled in the mask of the buffer stream.
             arguments
-                obj (1,1) iio.Block
-                ch (1,1) iio.Channel
+                obj (1,1) {mustBeA(obj, "iio.Block")}
+                ch (1,1) {mustBeA(ch, "iio.Channel")}
             end
             off = iio_mex('block_first', obj.Handle, ch.Handle);
         end
@@ -214,7 +229,7 @@ classdef Block < iio.internal.Object
         function fd = dmabuf_fd(obj)
             %DMABUF_FD File descriptor of the DMABUF behind the block; iio:EINVAL when it has none.
             arguments
-                obj (1,1) iio.Block
+                obj (1,1) {mustBeA(obj, "iio.Block")}
             end
             fd = iio_mex('block_get_dmabuf_fd', obj.Handle);
         end
@@ -222,9 +237,10 @@ classdef Block < iio.internal.Object
         function disable_cpu_access(obj, tf)
             %DISABLE_CPU_ACCESS Switch CPU access to the block off (true) or on again (false).
             %   While it is off the data of the block cannot be read or written (iio:EPERM).
-            %   A backend without DMABUF blocks raises iio:ENOSYS.
+            %   A backend without DMABUF blocks raises iio:ENOSYS; a block of an
+            %   iio.Stream belongs to the stream and raises iio:EPERM.
             arguments
-                obj (1,1) iio.Block
+                obj (1,1) {mustBeA(obj, "iio.Block")}
                 tf (1,1) logical
             end
             iio_mex('block_disable_cpu_access', obj.Handle, tf);

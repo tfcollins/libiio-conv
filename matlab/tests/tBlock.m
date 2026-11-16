@@ -156,6 +156,34 @@ classdef tBlock < IioTestCase
             tc.verifyClass(r, 'uint8');
             tc.verifyEqual(numel(r), 16);
             tc.verifyEqual(r(:), uint8([0; 8; 1; 24; 2; 40; 3; 56; 4; 72; 5; 88; 6; 104; 7; 120]));
+            % a channel that is not enabled in the mask of the stream: empty, of its class
+            v2 = v0i.device.find_channel("voltage2");
+            e = v2.read(blk);
+            tc.verifyClass(e, 'int16');
+            tc.verifySize(e, [0 1]);
+            e = v2.read(blk, true);
+            tc.verifyClass(e, 'uint8');
+            tc.verifySize(e, [0 1]);
+        end
+
+        function argumentsAreNotConverted(tc)
+            % an argument that must be a block or a channel is refused when it is
+            % something else, before the gateway is called
+            [blk, bs, v0i] = rxBlock(tc);
+            n = iio.internal.handle_count();
+            tc.verifyValidationError(@() blk.first(bs));
+            tc.verifyValidationError(@() blk.first("voltage0_i"));
+            tc.verifyValidationError(@() v0i.read(bs));
+            tc.verifyValidationError(@() v0i.read(5));
+            tc.verifyValidationError(@() v0i.write(bs, int16(1)));
+            tc.verifyValidationError(@() blk.read(Channels = "voltage0_i"));
+            tc.verifyValidationError(@() blk.read(Channels = bs));
+            tc.verifyValidationError(@() blk.write(int16([1 2]), Channels = bs));
+            tc.verifyEqual(iio.internal.handle_count(), n);
+            % a channel twice is an error of the gateway
+            tc.verifyError(@() blk.read(Channels = [v0i v0i]), 'iio:EINVAL');
+            tc.verifyError(@() blk.write(int16([1 2]), Channels = [v0i v0i]), 'iio:EINVAL');
+            tc.verifyEqual(v0i.read(blk), int16((-2048:-2041).'));      % the block is as it was
         end
 
         function write(tc)
@@ -168,6 +196,25 @@ classdef tBlock < IioTestCase
             bs.start();
             tc.verifyTrue(blk.dequeue());
             tc.verifyEqual(tc.Fx.readInt16('emu-tx_buf0.bin'), int16([100; 1; -200; 2; 300; 3; -400; 4]));
+        end
+
+        function writeGainOffset(tc)
+            % the block gets (DATA - Offset) / Gain, per column: the inverse of read
+            bs = openTx(tc);
+            blk = bs.create_block(2 * bs.sample_size);
+            n = blk.write([100 100; 200 200], Gain = [2 4], Offset = [10 -20]);
+            tc.verifyEqual(n, 2);
+            tc.verifyEqual(blk.read(OutputDataType = "int16"), int16([45 30; 95 55]));
+            tc.verifyEqual(blk.read(Gain = [2 4], Offset = [10 -20]), [100 100; 200 200]);
+            % complex: the offset is taken from the real and from the imaginary part
+            n = blk.write([100 + 50i; 10 + 20i], Gain = 2, Offset = 10);
+            tc.verifyEqual(n, 2);
+            tc.verifyEqual(blk.read(OutputDataType = "int16"), int16([45 20; 0 5]));
+            tc.verifyEqual(blk.read(Complex = true, Gain = 2, Offset = 10), [100 + 50i; 10 + 20i]);
+            blk.enqueue(n * bs.sample_size);
+            bs.start();
+            tc.verifyTrue(blk.dequeue());
+            tc.verifyEqual(tc.Fx.readInt16('emu-tx_buf0.bin'), int16([45; 20; 0; 5]));
         end
 
         function writeShapes(tc)

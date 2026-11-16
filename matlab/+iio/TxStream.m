@@ -18,10 +18,17 @@ classdef TxStream < iio.internal.Object
     %       Scale             "none" (default): DATA holds sample values; "iio": values
     %                         in the unit of the channel; "fullscale": -1 to 1. "iio"
     %                         and "fullscale" need DATA of class double or single.
-    %       Gain, Offset      a scalar, or one value per column, applied to DATA of
-    %                         class double or single before the conversion
+    %       Gain, Offset      a scalar, or one value per column, for DATA of class
+    %                         double or single. The device gets (DATA - Offset) / Gain:
+    %                         the exact inverse of iio.RxStream, which returns
+    %                         sample * Gain + Offset. With Gain = 2 and Offset = 10
+    %                         the value 100 is sent as (100 - 10) / 2 = 45, and 45
+    %                         received with the same options is 100 again. With
+    %                         Complex the Offset is taken from the real and from the
+    %                         imaginary part alike.
     %       Raw               true: DATA holds the storage words as they are sent
-    %       NumBlocks         frames that can be in flight at the same time (default 2)
+    %       NumBlocks         frames that can be in flight at the same time (default
+    %                         2, at most 4096)
     %       Cyclic            true: the first frame written repeats until the stream
     %                         is closed; a second write is an error (default false)
     %       Timeout           how long write and flush wait for a free block, in ms.
@@ -31,9 +38,13 @@ classdef TxStream < iio.internal.Object
     %                         (default): the first buffer that has every channel
     %
     %   The first write starts the buffer. T.flush() waits until the queued frames are
-    %   sent. T.close() waits for the frames in flight (for at most one second when the
-    %   context has no timeout) and releases the buffer; so does deleting T or letting
-    %   it go out of scope. The stream keeps DEV and its context alive.
+    %   sent. T.close() waits for the frames in flight and releases the buffer; so does
+    %   deleting T or letting it go out of scope. That wait is the one of write: up to
+    %   Timeout ms; with Timeout = -1 as long as the timeout of the context allows for
+    %   each frame, and at most one second when the context has no timeout. It cannot
+    %   be interrupted, and it also runs at clear all and when MATLAB exits: set no
+    %   Timeout that is longer than you are ready to wait there. The stream keeps DEV
+    %   and its context alive.
     %
     %   See also iio.RxStream, iio.Device, iio.Channel.
 
@@ -54,7 +65,7 @@ classdef TxStream < iio.internal.Object
     methods
         function obj = TxStream(dev, channels, opts)
             arguments
-                dev (1,1) iio.Device
+                dev (1,1) {mustBeA(dev, "iio.Device")}
                 channels                      % string array / cellstr / char of channel ids, or iio.Channel array;
                                               % column order; with Complex: I then Q of each column
                 opts.SamplesPerFrame (1,1) double {mustBeInteger, mustBePositive} = 32768
@@ -102,7 +113,8 @@ classdef TxStream < iio.internal.Object
             %WRITE Convert and queue one frame.
             %   VALID = WRITE(T, DATA) takes 1 to SamplesPerFrame rows and one column per
             %   channel (per I/Q pair with Complex). VALID is false when no block became
-            %   free within the Timeout; nothing was queued then.
+            %   free within the Timeout; nothing was queued then. With Gain and Offset the
+            %   device gets (DATA - Offset) / Gain (see iio.TxStream).
             valid = iio_mex('conv_stream_write', obj.Handle, data);
         end
 
