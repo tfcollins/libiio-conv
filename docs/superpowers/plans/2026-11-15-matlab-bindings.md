@@ -29,7 +29,7 @@ MEX build
 - `IIO_CONV_BUILD_MATLAB=ON` is never combined with `IIO_CONV_SANITIZE=ON`; the mock tests are sanitized by `IIO_CONV_MEX_SANITIZE` (default ON) in the same build directory.
 - Gateway C code may call only the `mx*`/`mex*` functions declared in `tests/mxmock/matrix.h` and `tests/mxmock/mex.h`. Needing another one means adding it to the mock, to `tests/mex/mx_conformance.c` and to `tests/mex/test_mxmock.c` in the same commit (wave 0 only; a wave 1 task that needs one stops and reports). No typed accessors (`mxGetDoubles` ...), no `mxGetPr`, no `printf` (a macro for `mexPrintf` under `mex.h`; for the same reason write `format(__printf__, ...)`), no `__attribute__((cleanup))`.
 - Error discipline: a command function returns 0 or a negative errno and never calls `mexErrMsgIdAndTxt`; it frees what it allocated, and every libiio object it created is in the handle table, or destroyed, before it returns or calls any `mx*` function that can fail. The dispatcher raises exactly once, last, with nothing held.
-- Out of memory (every `mxCreate*`, `mxMalloc`, `mxArrayToUTF8String` can end the call non-locally): **result first**: a command that creates an owned libiio object calls `gw_ret_id(c, 0, 0)` before it creates the object, registers the object, then stores the id with `gw_set_id()`; no mx allocation follows the creation, so no object can exist whose id MATLAB never received. **Parking**: memory that libiio returns from `malloc` (`iio_context_get_xml`, `iio_attr_get_available`) is handed to `gw_park()` at once and never freed by the command (both helpers: `mx_util.h`).
+- Out of memory (every `mxCreate*`, `mxMalloc`, `mxArrayToUTF8String` can end the call non-locally): **result first**: a command that creates an owned libiio object calls `gw_ret_id(c, 0, 0)` before it creates the object, registers the object, then stores the id with `gw_set_id()`; no mx allocation follows the creation, so no object can exist whose id MATLAB never received. The same rule keeps the lock right: the dispatcher updates the lock only when a command returns, so a command that creates or destroys a root handle (`create_context`, `scan`, `test_create_fake_context`, and every destroy command) makes no mx allocation after the handle table changed; otherwise an allocation failure leaves the lock stale until the next gateway call returns (teardown stays ordered even then: the at-exit function calls `gw_handle_destroy_all()`). **Parking**: memory that libiio returns from `malloc` (`iio_context_get_xml`, `iio_attr_get_available`) is handed to `gw_park()` at once and never freed by the command (both helpers: `mx_util.h`).
 - Per-call scratch memory is `mxMalloc`/`mxFree`; everything that outlives a call is `malloc`/`free`.
 
 Identifiers and naming
@@ -54,7 +54,7 @@ Working rules
 - Git, shared working tree and therefore ONE shared index: `git add <own paths>` (needed for new files), then always commit with a pathspec, `git commit -s -m "<message>" -- <own paths>` (a plain `git commit` would sweep in whatever another task has staged). Own paths = the files listed under the task's **Files**. Staged files of another task that `git status --short` shows are left alone. Never `git add -A`, `git commit -a`, `git stash`, `git checkout -- .`, `git reset --hard`, `git clean`. On an `index.lock` error wait 2 s and retry, at most 5 times. Implementers never push and never open pull requests.
 - A gate message that names only files of another task running in the same wave is not yours: put it in your report, do not edit the file.
 - emu traps: never dequeue a block of a buffer that is not started (5 s stall, then `-EBADF`); every `<buffer index>` of a fixture equals its position (else SIGSEGV); RX data comes verbatim from `<dir>/emu-rx_buf0.bin` whatever the mask (section "Test data"); always an absolute `emu:` path to a copy of the fixture in a temporary directory.
-- No test may take 4 s or more (CTest `TIMEOUT 30`; `check_junit.py --max-seconds 4` in CI). A slow test is a bug, usually the emu stall.
+- No test may take 4 s or more (CTest `TIMEOUT 30`; `check_junit.py --max-seconds 4` in CI). A slow test is a bug, usually the emu stall. The only exemption is the two lint tests `mex_mlint` and `mex_mlint_r2023b` (`TIMEOUT 120`): the `mlint` of R2023b needs about 0.7 s to start and 0.12 s per file (3.2 s for the 22 files of Task 8a), so they grow with the number of `.m` files.
 
 ## Review Focus
 
@@ -181,7 +181,7 @@ Failure modes that cross task boundaries. Each names the tasks that hold the tes
   | enum value with a name | two outputs: name (`char`, the C enumerator such as `'IIO_VOLTAGE'`, `'IIO_MOD_I'`, `'HWMON_TEMP'`, `'IIO_EV_TYPE_THRESH'`; `'UNKNOWN'` when the value has none) and value (`double`). Names come from `gw_enum_name()`, generated from `iio.h` |
   | `struct iio_context_params *` | `[]` (C `NULL`) or a scalar struct with any of the fields `log_level`, `stderr_level`, `timestamp_level`, `timeout_ms`, `flags` (missing = 0) |
 
-- **Optional inputs and outputs:** each command declares `min_rhs`, `max_rhs`, `max_lhs` in its registry entry (columns "Args" and "Out" of the "Command reference") and the dispatcher enforces them before the command runs. An optional argument is absent when it is beyond `nrhs` or is `[]` (0x0 double); `''` is a value, not "absent". Output 0 is always set by a command with `max_lhs >= 1` (MATLAB allows it when `nlhs == 0`); output k > 0 is set only when `k < nlhs` (the `gw_ret_*` helpers do this).
+- **Optional inputs and outputs:** each command declares `min_rhs`, `max_rhs`, `max_lhs` in its registry entry (columns "Args" and "Out" of the "Command reference") and the dispatcher enforces them before the command runs. An optional argument is absent when it is beyond `nrhs` or is `[]` (0x0 double; a complex 0x0 double counts as `[]` too, a 0x0x0 double does not); `''` is a value, not "absent". A text argument is a `char` row or any 2-D empty `char` (`''`, 1x0, 0x3: all read as `''`); a column, a matrix, an N-D `char` (0x0x0 included) is `iio:EINVAL`. No test may assert the opposite of these edge cases. Output 0 is always set by a command with `max_lhs >= 1` (MATLAB allows it when `nlhs == 0`); output k > 0 is set only when `k < nlhs` (the `gw_ret_*` helpers do this).
 - **Errors.** The dispatcher is the only caller of `mexErrMsgIdAndTxt`. Identifier `iio:<ERRNO NAME>` of the negative errno the command returned (from libiio, libiio-conv or the gateway); `iio:E<number>` when the errno has no name in `gw_errno_name()`. Text: `"<command>: "` followed by the command's `gw_fail()` message, else by `iio_strerror()`. The gateway's own uses:
 
   | errno | Raised by the gateway when |
@@ -256,7 +256,7 @@ What emu cannot test, and what covers it:
 | `iio_context_set_timeout` reaching the backend | value stored only | fake `timeout` (Task 10) |
 | scan with results | always 0 results | empty result only; MATLAB tests never scan `local`, `ip` or the default list |
 
-Explicitly untested in this plan, and stated so in `matlab/README.md` (Task 26): `local:`, `ip:`, `usb:`, `serial:` backends and real hardware; DMABUF success paths; cross-thread `iio_buffer_stream_cancel`; a dequeue that timed out on libiio's generic block path; Ctrl-C during a blocking call; a race at process exit between libiio's exit handler (`xmlCleanupParser()` on MATLAB's libxml2) and other MATLAB threads, beyond the exit-check loop of Task 8b (fallback F1 removes it); a v0 `libiio.so.0` already loaded in the MATLAB process by another toolbox; `parfor` workers; frame sizes above 4096 samples per block on emu other than in the timing test; scan results of real backends.
+Explicitly untested in this plan, and stated so in `matlab/README.md` (Task 26): `local:`, `ip:`, `usb:`, `serial:` backends and real hardware; DMABUF success paths; cross-thread `iio_buffer_stream_cancel`; a dequeue that timed out on libiio's generic block path; Ctrl-C during a blocking call; a race at process exit between libiio's exit handler (`xmlCleanupParser()` on MATLAB's libxml2) and other MATLAB threads, beyond the ten exit-check steps of Task 8b (fallback F1 removes it); a v0 `libiio.so.0` already loaded in the MATLAB process by another toolbox; `parfor` workers; frame sizes above 4096 samples per block on emu other than in the timing test; scan results of real backends.
 
 ### How tests are written
 
@@ -358,9 +358,10 @@ void gw_handle_reset(uint32_t seed);
 gw_id gw_handle_add(enum gw_type type, void *ptr, gw_id parent, bool owned,
 		const struct gw_ops *ops, void *aux);
 
-/* *id = the live entry (type, ptr) if there is one, else a new borrowed child of parent
- * (no ops, no aux). ptr == NULL gives *id = 0 and returns 0.
- * Returns 0, -EBADF (stale parent) or -ENOMEM. */
+/* *id = the live entry (type, ptr) if there is one, whatever parent is given (another one,
+ * zero or a stale id), else a new borrowed child of parent (no ops, no aux). ptr == NULL gives
+ * *id = 0 and returns 0. Returns 0, -EBADF (a new entry is needed and parent is zero or
+ * stale) or -ENOMEM. */
 int gw_handle_borrow(enum gw_type type, const void *ptr, gw_id parent, gw_id *id);
 
 /* pre_destroy(entry); destroy every child, newest first, recursively; release the cache slot;
@@ -380,7 +381,10 @@ uint32_t gw_handle_flags(gw_id id);                   /* 0 for a new entry and f
 void gw_handle_set_flags(gw_id id, uint32_t flags);   /* ignored for a stale id */
 /* Cache slot: a second attachment, for state that another source file keeps on an entry
  * (cmd_block.c: the converter cache of a buffer stream). Allowed on borrowed entries too.
- * Setting it first releases the previous cache with its cache_free; cache_free may be NULL. */
+ * Setting it first releases the previous cache with its cache_free; cache_free may be NULL.
+ * The slot is already empty while cache_free runs. cache_free may attach a cache to the entry
+ * (released in turn before a cache being set is stored, and at the latest when the entry is
+ * destroyed) and may destroy the entry (a cache being set is then not stored: stale id). */
 void *gw_handle_cache(gw_id id);                      /* NULL if none or stale */
 void gw_handle_set_cache(gw_id id, void *cache, void (*cache_free)(void *cache));   /* ignored for a stale id */
 size_t gw_handle_count(void);                         /* live entries */
@@ -590,8 +594,22 @@ mxArray *mock_sparse_double(size_t m, size_t n);    /* mxIsSparse true, class do
  * mxGetN d1 * d2 (the product of the trailing dimensions), so only the dimension count tells it
  * from a d0-by-(d1*d2) matrix. */
 mxArray *mock_nd_array(mxClassID cls, mxComplexity c, size_t d0, size_t d1, size_t d2);
+/* char d0-by-d1-by-d2 array (a matrix when d2 == 1) whose elements, in storage order (first
+ * dimension fastest), are the characters of text; strlen(text) must be d0 * d1 * d2. For the
+ * char arrays mxCreateString cannot make: a column, a matrix, N-D, 0-by-3. */
+mxArray *mock_char_array(size_t d0, size_t d1, size_t d2, const char *text);
 
-/* Known mock gaps (behaviour of real MATLAB that no local test can show): add one line per gap here. */
+/* Known mock gaps (behaviour of real MATLAB that no local test can show): add one line per gap here.
+ * - mxArrayToString converts to UTF-8; the real one converts to the locale's character set.
+ * - mxGetLogicals of an array that is not logical, mxGetScalar of an empty array, a cell, a
+ *   struct or an object, and mxGetField / mxGetCell beyond the end abort; the real ones return
+ *   the data, an undefined value, or NULL.
+ * - mock_string_object() has class id mxOPAQUE_CLASS; of a real string only the class name is certain.
+ * - mock_sparse_double() always has room for exactly one non-zero element.
+ * - mock_fail_alloc() counts only allocations made while mock_call() runs.
+ * - The stack is filled with 0xA5 before mexFunction runs (uninitialised locals), which has an
+ *   effect on the real stack only, not on AddressSanitizer's fake stack.
+ * (tests/mxmock/mxmock.c, at its top, gives the reason for each choice.) */
 
 #endif
 ```
@@ -1805,9 +1823,9 @@ end
   - lock and exit: after `mexLock` twice `mock_is_locked()`; `mock_clear_mex()` does not run the registered exit function; after two `mexUnlock` it runs it exactly once and a second `mock_clear_mex()` does not; `mock_exit_matlab()` runs a registered exit function even when locked.
   - `mxCreateUninitNumericMatrix` data bytes are all `0xA5`; `mxCreateNumericMatrix` data is zero; `plhs[0]` is non-NULL on entry to `mexFunction`.
   - each of these aborts: an identifier `"iio:22"`; `mexErrMsgIdAndTxt` outside `mock_call`; `mxDestroyArray(prhs[0])`; `mxSetCell` of the same array into two cells; `mxSetCell` of a `prhs` element; `mxGetM` of a destroyed array; `mxIsChar(NULL)`; `plhs[0] = (mxArray *)prhs[1]`; the same array in `plhs[0]` and `plhs[1]`; `nlhs == 2` with only `plhs[0]` set; `mxGetCell` beyond the end; `mxSetFieldByNumber` with a bad field number; `mxCreateStructMatrix` with field name `"in_voltage0-voltage1_scale"`; `mxGetLogicals` of a double array; `mxDestroyArray` of a cell member; `mxFree` of a `malloc` pointer or of a block twice (under ASan the child dies by the sanitizer instead: accept any abnormal exit for these two).
-  - allocation failure and special arrays: command `"three"` (creates three arrays, returns the third): after `mock_fail_alloc(2)`, `mock_call` returns 1, `mock_err_id()` is `"MATLAB:nomem"`, `mock_alloc_failed()` is true, `mock_autofreed()` and `mock_live()` are unchanged; the next `mock_call` succeeds (it fires once). `mock_string_object()`: `mxIsChar` false, `strcmp(mxGetClassName(a), "string") == 0`, `mxArrayToUTF8String(a) == NULL`, `mxGetData(a) == NULL`. `mock_sparse_double(2, 2)`: `mxIsSparse`, class id `mxDOUBLE_CLASS`. `mock_nd_array(mxINT16_CLASS, mxCOMPLEX, 4, 1, 2)`: `mxGetNumberOfDimensions` 3, `mxGetM` 4, `mxGetN` 2, `mxGetNumberOfElements` 8, `mxIsComplex`, non-NULL `mxGetData`; a matrix from `mxCreateNumericMatrix(4, 2, ..)` has `mxGetNumberOfDimensions` 2.
+  - allocation failure and special arrays: command `"three"` (creates three arrays, returns the third): after `mock_fail_alloc(2)`, `mock_call` returns 1, `mock_err_id()` is `"MATLAB:nomem"`, `mock_alloc_failed()` is true, `mock_autofreed()` and `mock_live()` are unchanged; the next `mock_call` succeeds (it fires once). `mock_string_object()`: `mxIsChar` false, `strcmp(mxGetClassName(a), "string") == 0`, `mxArrayToUTF8String(a) == NULL`, `mxGetData(a) == NULL`. `mock_sparse_double(2, 2)`: `mxIsSparse`, class id `mxDOUBLE_CLASS`. `mock_nd_array(mxINT16_CLASS, mxCOMPLEX, 4, 1, 2)`: `mxGetNumberOfDimensions` 3, `mxGetM` 4, `mxGetN` 2, `mxGetNumberOfElements` 8, `mxIsComplex`, non-NULL `mxGetData`; a matrix from `mxCreateNumericMatrix(4, 2, ..)` has `mxGetNumberOfDimensions` 2. `mock_char_array(3, 1, 1, "abc")`: `mxIsChar`, 2 dimensions, `mxGetM` 3, `mxGetN` 1, element size 2, elements `'a'`..`'c'`; `mock_char_array(1, 3, 2, "abcdef")`: 3 dimensions, `mxGetM` 1, `mxGetN` 6; `mock_char_array(0, 3, 1, "")`: `mxIsEmpty`, `mxGetN` 3, `mxGetData == NULL`.
 - [ ] **Step 3:** Run the three build lines of Step 5. Expected: FAIL to compile (`tests/mxmock/matrix.h` missing; the third line builds and passes: it uses the real `libmx`).
-- [ ] **Step 4:** Implement `tests/mxmock/`. `matrix.h`: the types `mxArray` (opaque), `mwSize`, `mwIndex`, `mwSignedIndex`, `mxChar` (`uint16_t`), `mxLogical` (`bool`), `mxClassID` with all 19 enumerators in MATLAB's order (`mxUNKNOWN_CLASS = 0` ... `mxOBJECT_CLASS = 18`), `mxComplexity`, `mxDouble` ... `mxUint64`, the ten `mxComplex*` structs, `MX_HAS_INTERLEAVED_COMPLEX 1`, `MX_TARGET_API_VER 0x08000000`, and prototypes copied from the real header for exactly: the `mx*` functions listed below `mxmock.h` in "Shared contracts". `mex.h`: `#include <stdio.h>` **before** anything else, then `"matrix.h"`, `mex_exit_fn`, the eight `mex*` functions of that list, and `#define printf mexPrintf` last (as the real header does). `mxmock.c` behaviour beyond what Steps 1 and 2 pin down: `mexErrMsgIdAndTxt` leaves by `longjmp` to `mock_call`; every `mx*` function aborts with a one-line message on a `NULL` (except the three no-op cases), destroyed or foreign array; a destroyed array's header stays allocated and reachable from a list (so later use is reported and LeakSanitizer stays quiet) while its data is really freed; at the end of every `mock_call` all arrays and `mxMalloc` blocks created during the call and not reachable from `plhs` are released and counted in `mock_autofreed()`; `mxSetCell`/`mxSetFieldByNumber` transfer ownership to the container and destroying a container destroys its members; a weak `mexFunction` that aborts, so programs that never call `mock_call` link without a gateway; `mock_fail_alloc`, `mock_alloc_failed`, `mock_string_object`, `mock_sparse_double` and `mock_nd_array` as documented in `mxmock.h`.
+- [ ] **Step 4:** Implement `tests/mxmock/`. `matrix.h`: the types `mxArray` (opaque), `mwSize`, `mwIndex`, `mwSignedIndex`, `mxChar` (`uint16_t`), `mxLogical` (`bool`), `mxClassID` with all 19 enumerators in MATLAB's order (`mxUNKNOWN_CLASS = 0` ... `mxOBJECT_CLASS = 18`), `mxComplexity`, `mxDouble` ... `mxUint64`, the ten `mxComplex*` structs, `MX_HAS_INTERLEAVED_COMPLEX 1`, `MX_TARGET_API_VER 0x08000000`, and prototypes copied from the real header for exactly: the `mx*` functions listed below `mxmock.h` in "Shared contracts". `mex.h`: `#include <stdio.h>` **before** anything else, then `"matrix.h"`, `mex_exit_fn`, the eight `mex*` functions of that list, and `#define printf mexPrintf` last (as the real header does). `mxmock.c` behaviour beyond what Steps 1 and 2 pin down: `mexErrMsgIdAndTxt` leaves by `longjmp` to `mock_call`; every `mx*` function aborts with a one-line message on a `NULL` (except the three no-op cases), destroyed or foreign array; a destroyed array's header stays allocated and reachable from a list (so later use is reported and LeakSanitizer stays quiet) while its data is really freed; at the end of every `mock_call` all arrays and `mxMalloc` blocks created during the call and not reachable from `plhs` are released and counted in `mock_autofreed()`; `mxSetCell`/`mxSetFieldByNumber` transfer ownership to the container and destroying a container destroys its members; a weak `mexFunction` that aborts, so programs that never call `mock_call` link without a gateway; `mock_fail_alloc`, `mock_alloc_failed`, `mock_string_object`, `mock_sparse_double`, `mock_nd_array` and `mock_char_array` as documented in `mxmock.h`; before it calls `mexFunction`, `mock_call` fills 32 KiB of stack below its own frame with `0xA5` (a `noinline` function with a `volatile` array), so that an uninitialised local of the gateway reads as `0xA5` in every call (effective on the real stack; under AddressSanitizer only with `ASAN_OPTIONS=detect_stack_use_after_return=0`, which `tests/mex/CMakeLists.txt` sets for `test_dispatch`).
 - [ ] **Step 5:** Build and run **[RUN]** (the third line was run with a stand-in source):
 
   ```sh
@@ -1954,9 +1972,12 @@ end
   	# Adds c_mexapi_version.c, the export version script, libmex and libmx.
   	matlab_add_mex(NAME iio_mex MODULE SRC ${objs} R2018a LINK_TO iio-conv-static ${CMAKE_DL_LIBS})
   	target_link_options(iio_mex PRIVATE -Wl,--no-undefined)
+  	# matlab/iio_mex.mexa64 by default, for addpath('matlab'). Every build directory writes that
+  	# one file: two full builds at the same time (or for two MATLAB releases) each need their own.
+  	set(IIO_MEX_OUTPUT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE PATH "Directory that receives iio_mex.mexa64")
   	set_target_properties(iio_mex PROPERTIES
   		C_VISIBILITY_PRESET default
-  		LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})   # matlab/iio_mex.mexa64: addpath('matlab')
+  		LIBRARY_OUTPUT_DIRECTORY ${IIO_MEX_OUTPUT_DIR})
 
   	if(IIO_CONV_BUILD_TESTS)
   		set(mlibs "LD_LIBRARY_PATH=${Matlab_ROOT_DIR}/bin/glnxa64:${Matlab_ROOT_DIR}/sys/os/glnxa64")
@@ -1968,7 +1989,8 @@ end
   		set_tests_properties(mex_exports mex_loadcheck PROPERTIES LABELS mex)
   		# Task 7: G3
   		add_test(NAME mex_mlint COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_mlint.sh)
-  		set_tests_properties(mex_mlint PROPERTIES ENVIRONMENT "MATLAB_ROOT=${Matlab_ROOT_DIR}" LABELS mex)
+  		# The lint tests are exempt from the 4 s rule: mlint of R2023b needs about 0.12 s per file.
+  		set_tests_properties(mex_mlint PROPERTIES ENVIRONMENT "MATLAB_ROOT=${Matlab_ROOT_DIR}" LABELS mex TIMEOUT 120)
   	endif()
   endif()
   ```
@@ -2031,6 +2053,10 @@ end
   	endif()
   endif()
   set_tests_properties(${names} PROPERTIES LABELS mex TIMEOUT 30)
+  # The dispatcher's own frame on the real stack, which the mock fills with 0xA5 before every
+  # call: an uninitialised field of struct gw_call then fails this test instead of reading as 0
+  # from AddressSanitizer's fake stack.
+  set_tests_properties(test_dispatch PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_stack_use_after_return=0")
   ```
 
 - [ ] **Step 4:** Write the three headers exactly as in "Shared contracts". Write the skeleton sources:
@@ -2100,6 +2126,11 @@ end
   - flags and cache (a second build of the same tree): a new entry has `gw_handle_flags(id) == 0`; after `gw_handle_set_flags(id, 3)` it is 3; `gw_handle_flags` of a stale id is 0 and `gw_handle_set_flags` on it does nothing. `gw_handle_set_cache(b, "K1", free1)` then `gw_handle_cache(b)` is `"K1"`; setting `"K2"` calls `free1("K1")` once; a cache can be set on a borrowed entry; `gw_handle_destroy(a)` with a cache on `B` logs `pA dF pB dE dD kK2 dB dA ` (the cache free function appends `"k<cache> "`: after the children, before `destroy`); `gw_handle_cache` of a stale id is `NULL`.
   - the entry is live inside its own `pre_destroy`: a `pre_destroy` op that calls `gw_handle_find(GW_T_BUFFER_STREAM, ptr)` gets its own id, `gw_handle_flags` of it returns the value set before (3) and `gw_handle_ptr` returns `ptr`; inside its `destroy` op `gw_handle_ptr` returns `NULL`.
   - re-entrancy: a `destroy` op that calls `gw_handle_destroy` on its own id and on its (already destroyed) child returns normally and each op ran exactly once.
+  - a borrow of an existing `(type, pointer)` with a stale parent (`12345`) or parent `0` returns the existing id and 0, and the entry keeps its parent.
+  - a `pre_destroy` op that adds 200 children (the table grows from its first 64 slots) and then calls `gw_handle_find` on its own pointer gets its own id; `gw_handle_ptr` and `gw_handle_flags` still answer; all 200 children are destroyed.
+  - a child whose `pre_destroy` destroys its parent: inside the child's `destroy` op `gw_handle_parent(child)` and `gw_handle_root(child)` are 0 (not the id of the destroyed parent).
+  - cache re-entrancy: a `destroy` op that calls `gw_handle_set_cache` on its own id: that cache's free function runs exactly once (log `kK1 dB kK3 `). A cache free function that calls `gw_handle_cache` on its entry sees `NULL` (in `gw_handle_set_cache` and in a teardown). A free function that attaches a cache `K2` to its own entry: `set_cache(K3)` logs `kK1 kK2 ` and leaves `K3` in the slot; in a teardown the log is `kK1 dB kK2 `. A free function that destroys its entry and then adds a new entry (which takes over the slot): the cache being set is attached to nothing, `gw_handle_cache(new) == NULL`, and its free function is never called.
+  - one pointer borrowed under all 12 types after 100 other entries: 12 different ids, `gw_handle_find(type, ptr)` gives each type its own, and after one of them is destroyed the others are still found. (The type comparison in `gw_handle_find` cannot be isolated by a test: with this hash, entries of one pointer and two types never share a bucket below 2^24 slots.)
   - `gw_handle_destroy_all()` with roots R1, R2, R3 (created in that order, R2 with a child) logs `dR3`, then R2's child, `dR2`, `dR1`; count 0.
   - growth: 10 000 roots added, every `gw_handle_ptr` valid, `gw_handle_destroy_all()`, count 0.
   - `gw_handle_reset(9)` after entries exist calls no op and the next id has generation 9; `gw_handle_reset(0)` starts at generation 1.
@@ -2131,7 +2162,8 @@ end
   - `mock_call` with `nrhs == 0`, with a double as first argument, with `"no_such"`, with `"T_OK"`: each `iio:ENOSYS`.
   - `t_range` with 0 or 3 args: `iio:EINVAL`; `t_ok` with `nlhs == 2`: `iio:EINVAL`; `t_ok` with `nlhs == 0` returns 42 in `out[0]`; `t_two` with `nlhs == 1` returns one array and `mock_live()` grew by exactly 1.
   - `t_errno(22)`: `iio:EINVAL` with message `"t_errno: Invalid argument (-22)"`; `(110)`: `iio:ETIMEDOUT`; `(95)`: `iio:ENOTSUP`; `(11)`: `iio:EAGAIN`; `(38)`: `iio:ENOSYS`; `(524)`: `iio:E524`.
-  - `t_msg`: `iio:EIO`, message `"t_msg: disk 3"`.
+  - `t_msg`: `iio:EIO`, message `"t_msg: disk 3"`. Directly after it `t_errno(5)` has exactly the message `"t_errno: Input/output error (-5)"`; `t_msg_long` (`gw_fail(c, -EIO, "%0300d", 7)`) gives a message of `strlen("t_msg_long: ") + 255` characters, and `t_errno(2)` after it exactly `"t_errno: No such file or directory (-2)"` (CTest runs `test_dispatch` with `ASAN_OPTIONS=detect_stack_use_after_return=0`, so an uninitialised `err_msg` reads as the mock's `0xA5` stack fill and fails these).
+  - command names that are not a row, built with `mock_char_array` (the group also registers a command `t`): 4x1 `t_ok`, 1x2x2 `t_ok`, 2x2 `t_ok`, 16x1 and 1x8x2 `mex_handle_count`, 0x4: each `iio:ENOSYS` with a message containing `the first argument must be a command name`.
   - `t_out_then_fail`: `iio:EBUSY`, `out[0] == NULL`, `mock_live()` unchanged; `t_forget` with `nlhs == 1`: `iio:EFAULT`.
   - locking: not locked at start; after `t_add` locked and `mex_handle_count` is 1; `mock_clear_mex()` changes nothing; `t_del(id)` runs the destroy op once and unlocks; `t_del(id)` again and `t_del(0)` do nothing; `t_del` with a live id of another type: `iio:EBADF`.
   - result first and parking under allocation failure: `mock_fail_alloc(1)` then `t_add`: `mock_alloc_failed()`, `gw_handle_count()` unchanged, the ops log unchanged, not locked. `t_park`: the log is `"f"` when `mock_call` returns. `mock_fail_alloc(1)` then `t_park`: `mock_alloc_failed()`; after the next call (`t_ok`) the log holds exactly one more `"f"`. A fifth `gw_park` in one call returns `-ENOMEM` after freeing its pointer.
@@ -2141,18 +2173,18 @@ end
   - `gw_errno_name`: `-22` and `22` give `"EINVAL"`; `-110` `"ETIMEDOUT"`; `-95` `"ENOTSUP"`; `-11` `"EAGAIN"`; `-2` `"ENOENT"`; `-13` `"EACCES"`; `-1` `"EPERM"`; `-16` `"EBUSY"`; `-19` `"ENODEV"`; `-6` `"ENXIO"`; `-28` `"ENOSPC"`; `-27` `"EFBIG"`; `-34` `"ERANGE"`; `-32` `"EPIPE"`; `-111` `"ECONNREFUSED"`; `-113` `"EHOSTUNREACH"`; `-9` `"EBADF"`; `-12` `"ENOMEM"`; `-5` `"EIO"`; `-75` `"EOVERFLOW"`; `0` and `-99999` give `NULL`.
   - `gw_arg_id`: `uint64(5)` gives 5; `double(5)`, a 1-by-2 `uint64`, a complex `uint64`: bad.
   - `gw_arg_handle(GW_T_DEVICE)`: live device id gives its pointer; id 0, an unknown id, a destroyed id: `iio:EBADF` with a message containing `"invalid or destroyed device handle"`; a live context id: `iio:EBADF` with `"expected a device handle, got a context"`. `gw_arg_handle0`: id 0 gives `NULL` pointer and success.
-  - `gw_arg_str`: `"abc"` gives `"abc"`; `""` gives `""`; `"µV"` (UTF-8) round-trips; a double, a cell: bad. `gw_arg_str0`: `[]` and a missing argument give `NULL`; `""` gives `""`.
+  - `gw_arg_str`: `"abc"` gives `"abc"`; `""` gives `""`; `"µV"` (UTF-8) round-trips; a double, a cell: bad; `mock_char_array` 3x1, 2x3, 1x3x2 and 0x0x0: bad; 1x3 gives the text; 0x3 and 1x0 give `''`. `gw_arg_str0`: `[]` and a missing argument give `NULL`; `""` gives `""`.
   - `gw_arg_bool`: logical scalar true gives true; `double(1)`, a 1-by-2 logical: bad.
   - `gw_arg_int(lo = -5, hi = LLONG_MAX)`: `double(3)` gives 3; `int8(-5)` gives -5; `int64(9007199254740993)` gives exactly 9007199254740993; `uint64(9223372036854775807)` gives that; `uint64(2^63)`, `double(2.5)`, `double(-6)`, `NaN`, `Inf`, logical `true`, a char, a complex double, a 1-by-2 double: bad. `gw_arg_index`: `double(4294967295)` gives 4294967295; `-1` and `4294967296`: bad.
   - `gw_arg_double`: `double(2.5)`, `single(2.5)`, `int32(2)` give 2.5, 2.5, 2; a char, a logical, a complex double: bad.
   - `gw_arg_bytes`: a 1-by-5 `uint8`, a 5-by-1 `uint8` give the same pointer as `mxGetData` and count 5; an empty `uint8` (0x0, 1x0 and 0x1) gives count 0 and a non-NULL pointer; a `double` vector, a 2-by-2 `uint8`: bad.
   - `gw_arg_params`: `[]` gives `NULL`; a struct `{timeout_ms: 123, log_level: 1, flags: 1}` gives those values and 0 elsewhere (including all 32 reserved bytes); field `bogus`: bad; `timeout_ms: 1.5`: bad; a 1-by-2 struct: bad.
-  - `gw_arg_given`: false for a missing argument and for `[]`; true for `''`, `0`, and an empty `uint8`.
+  - `gw_arg_given`: false for a missing argument, for `[]` and for a complex 0x0 double; true for `''`, `0`, an empty `uint8` and a 0x0x0 double.
   - results: `gw_ret_str(NULL)` is a 0x0 double; `("")` a 0x0 char; `("abc")` a 1-by-3 char; `gw_ret_id` a `uint64` scalar, and `gw_set_id(c, 0, UINT64_MAX)` after it makes that scalar `UINT64_MAX`; `gw_ret_ids(n = 0)` a 1-by-0 `uint64`; `gw_ret_int64(INT64_MIN)` an `int64` scalar holding it; `gw_ret_uint64(UINT64_MAX)`; `gw_ret_bool`; `gw_ret_double`; `gw_ret_doubles({1, 2, 3})` a 1-by-3 double; `gw_ret_bytes("a\0b", 3)` a 1-by-3 `uint8` `[97 0 98]`; `gw_ret_bytes(NULL, 0)` a 1-by-0 `uint8`; `gw_ret_strs({"x", "yz"})` a 1-by-2 cell of char; `gw_ret_strs(n = 0)` a 1-by-0 cell; `gw_ret_empty` a 0x0 double; any `gw_ret_*(c, 1, ...)` with `nlhs == 1` creates nothing (`mock_live()` unchanged).
   - `gw_ret_borrowed(c, 0, GW_T_ATTR, p, some_device_id)`: the new id's parent is the device's root context; `p == NULL` returns id 0.
   - `gw_arg_destroy(GW_T_MASK)`: a live owned mask entry is destroyed (its op ran once); a live borrowed mask entry is left alive and no error is raised; a live context id: `iio:EBADF`; 0 and a stale id: nothing.
   - objects that are not what they seem: `gw_arg_str` and `gw_arg_str0` with `mock_string_object()`: `iio:EINVAL`; `gw_arg_double`, `gw_arg_int` and `gw_arg_bytes` with `mock_sparse_double(1, 1)`: `iio:EINVAL`.
-- [ ] **Step 3:** Write `tests/mex/test_trace.c` (a local group `gw_group_local` with one command `t_ok`, and the line `MT_GROUPS(&gw_group_local);`): `setenv("IIO_MEX_TRACE", "<mkdtemp dir>/trace.log", 1)` before the first call; call `mex_handle_count`, `t_ok`, `no_such`; the file is exactly the six lines `> mex_handle_count`, `< mex_handle_count ok`, `> t_ok`, `< t_ok ok`, `> no_such`, `< no_such iio:ENOSYS`. The test removes the file and the directory.
+- [ ] **Step 3:** Write `tests/mex/test_trace.c` (a local group `gw_group_local` with one command `t_ok`, and the line `MT_GROUPS(&gw_group_local);`): `setenv("IIO_MEX_TRACE", "<mkdtemp dir>/trace.log", 1)` and the line `earlier line` written into that file before the first call; call `mex_handle_count`, `t_ok`, `no_such`; the file is exactly `earlier line` (append mode: it is still the first line) followed by the six lines `> mex_handle_count`, `< mex_handle_count ok`, `> t_ok`, `< t_ok ok`, `> no_such`, `< no_such iio:ENOSYS`. After `mock_exit_matlab()` with the variable still set, the next call appends to the same file; after `mock_exit_matlab()` and `setenv("IIO_MEX_TRACE", "", 1)` calls work and the file does not change. The test removes the file and the directory.
 - [ ] **Step 4:** Write `tests/mex/test_fixture.c` (it defines `const struct gw_group *const gw_groups[] = { &gw_group_mex, NULL };`): `mt_fixture_setup(&fx, argv[1]) == 0`; `fx.uri` starts with `"emu:/"` and `fx.xml_uri` with `"xml:/"`; `iio_create_context(NULL, fx.uri)` has 8 devices and `iio_context_find_device(ctx, "emu-phy")` has 14 attributes; `fixture_read_file(fx.dir, "emu-rx_buf0.bin", buf, 20000)` returns 16384 and the first four bytes are `00 08 ff 07`; `id = mt_open_context(fx.uri)` is non-zero, `gw_handle_type(id) == GW_T_CONTEXT`, `mex_handle_count` is 1 and `gw_handle_destroy(id)` leaves it at 0; `mt_open_context("bogus:foo") == 0`; `mt_oom_sweep(1, "mex_handle_count", 0)` returns at least 1 (the last attempt succeeded) and leaves `mock_live()` unchanged; after `mt_fixture_teardown` the directory is gone.
 - [ ] **Step 5:** Run the build line of "Gates". Expected: the four new tests fail to link.
 - [ ] **Step 6:** Implement `mx_util.c`, the dispatcher in `iio_mex.c`, the trace, and `mex_test.c` (with `mt_oom_sweep`). `gw_errno_name` covers at least every name in Step 2 plus `ESRCH EINTR E2BIG EFAULT EEXIST ENOTDIR EISDIR EMFILE EROFS EDOM ENAMETOOLONG ENODATA ETIME EPROTO EBADMSG EMSGSIZE EPROTOTYPE EADDRINUSE EAFNOSUPPORT ENETDOWN ENETUNREACH ECONNABORTED ECONNRESET ENOBUFS EISCONN ENOTCONN ESHUTDOWN EHOSTDOWN EALREADY EINPROGRESS ECANCELED EREMOTEIO EILSEQ`. Argument error texts name the argument as `"argument <k+1>"`, state what was expected and the class and size that arrived.
@@ -2193,7 +2225,7 @@ end
     7. every MATLAB member of a row exists: `matlab/+iio/<Class or function>.m` is a file, and for `iio.Class.member` the file contains `member` as a whole word.
 
     Rules 1 to 4 are always errors. Rules 5 to 7 are errors with `--strict`; with `--group G` only rule 6 for the file of group G is an error and the rest of 5 to 7 is pending; with neither option all of 5 to 7 is pending. A pending line names the command, the row's MATLAB members and the file concerned, so that its owner can be found.
-  - `check_mlint.sh [file.m ...]` (default: every `.m` under `matlab/`): exit 0 clean, 1 if any message of level ML2 or ML3 or any `L 0` line, 77 if `mlint` is not found (`$MLINT`, else `$MATLAB_ROOT/bin/glnxa64/mlint`).
+  - `check_mlint.sh [file.m ...]` (default: every `.m` under `matlab/`): exit 0 clean, 1 if any message of level ML2 or ML3 or any `L 0` line, or if `mlint` did not print one `========== <file> ==========` header per file (a program that prints nothing has checked nothing), 77 if `mlint` is not found (`$MLINT`, else `$MATLAB_ROOT/bin/glnxa64/mlint`).
   - CTest tests `mex_api_map`, `mex_tools_selftest`, `mex_mlint`, `mex_mlint_r2023b` (label `mex`).
   - M: `iio.internal.Object` (below), `iio.internal.params(opts)`, `iio.internal.timeout_ms(t)`, `iio.internal.shutdown()`, `n = iio.internal.handle_count()`, and nine stub classes with the internal constructor.
 
@@ -2277,6 +2309,9 @@ fi
 # mlint always exits 0 and writes to stderr. The extra /dev/null argument forces the
 # "========== file ==========" header even when only one file is checked.
 out=$("$mlint" -id -severity -m2 "$@" /dev/null 2>&1 | grep -v '^========== /dev/null' | grep -v "'/dev/null'")
+# Proof that mlint ran: one header per file. A program that prints nothing has checked nothing.
+n=$(printf '%s\n' "$out" | grep -c '^========== ')
+[ "$n" -eq $# ] || { echo "check_mlint: mlint reported on $n of $# file(s)"; exit 1; }
 if printf '%s\n' "$out" | grep -q '^L [0-9]'; then
 	printf '%s\n' "$out" | awk '/^==========/ { file = $2; next } /^L [0-9]/ { print file ": " $0 }'
 	echo "check_mlint: FAILED"
@@ -2294,7 +2329,7 @@ echo "check_mlint: $# file(s), no errors"
   - rule 6, with `--group x`: a `GW_CMD` line bound to `gw_stub`: `is still a stub`; the same tree with `--group y` exits 0.
   - rule 7, with `--strict`: a member that the class file does not contain: `not found in`.
 
-  Two more cases run `check_mlint.sh` and are skipped when `mlint` is not found: a file containing `x = 1 +;` exits 1 and prints `SYNER`; a file with only an unused variable exits 0.
+  Three more cases run `check_mlint.sh` and are skipped when `mlint` is not found: a file containing `x = 1 +;` exits 1 and prints `SYNER`; a file with only an unused variable exits 0; with `MLINT=/bin/true` (a program that runs and reports nothing) it exits 1 and prints `mlint reported on 0 of 1 file(s)`.
 - [ ] **Step 2:** Run `python3 matlab/tools/test_tools.py`. Expected: errors (scripts missing).
 - [ ] **Step 3:** Write `check_api.py` and `check_mlint.sh` (`chmod +x` both). Add the two `Task 7` blocks of Task 4's listing to `matlab/CMakeLists.txt`, and directly after the `mex_mlint` test:
 
@@ -2302,7 +2337,7 @@ echo "check_mlint: $# file(s), no errors"
   		set(IIO_MLINT_MIN_ROOT /usr/local/MATLAB/R2023b CACHE PATH "MATLAB root of the minimum supported release (lint only)")
   		if(EXISTS ${IIO_MLINT_MIN_ROOT}/bin/glnxa64/mlint)
   			add_test(NAME mex_mlint_r2023b COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_mlint.sh)
-  			set_tests_properties(mex_mlint_r2023b PROPERTIES ENVIRONMENT "MATLAB_ROOT=${IIO_MLINT_MIN_ROOT}" LABELS mex)
+  			set_tests_properties(mex_mlint_r2023b PROPERTIES ENVIRONMENT "MATLAB_ROOT=${IIO_MLINT_MIN_ROOT}" LABELS mex TIMEOUT 120)
   		endif()
   ```
 
@@ -2439,12 +2474,58 @@ echo "check_mlint: $# file(s), no errors"
             strict: true
             startup-options: -logfile test-results/matlab.log
 
-        - name: Process exit with libiio loaded (10 MATLAB runs)
+        - name: Process exit with libiio loaded (run 1 of 10)
+          uses: matlab-actions/run-command@v2
+          with:
+            command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+        - name: Process exit with libiio loaded (run 2 of 10)
+          uses: matlab-actions/run-command@v2
+          with:
+            command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+        - name: Process exit with libiio loaded (run 3 of 10)
+          uses: matlab-actions/run-command@v2
+          with:
+            command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+        - name: Process exit with libiio loaded (run 4 of 10)
+          uses: matlab-actions/run-command@v2
+          with:
+            command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+        - name: Process exit with libiio loaded (run 5 of 10)
+          uses: matlab-actions/run-command@v2
+          with:
+            command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+        - name: Process exit with libiio loaded (run 6 of 10)
+          uses: matlab-actions/run-command@v2
+          with:
+            command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+        - name: Process exit with libiio loaded (run 7 of 10)
+          uses: matlab-actions/run-command@v2
+          with:
+            command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+        - name: Process exit with libiio loaded (run 8 of 10)
+          uses: matlab-actions/run-command@v2
+          with:
+            command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+        - name: Process exit with libiio loaded (run 9 of 10)
+          uses: matlab-actions/run-command@v2
+          with:
+            command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+        - name: Process exit with libiio loaded (run 10 of 10)
+          uses: matlab-actions/run-command@v2
+          with:
+            command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+        - name: No crash dump after the exit checks
           run: |
-            for i in 1 2 3 4 5 6 7 8 9 10; do
-              matlab -batch "addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit" \
-                || { echo "exit check: run $i failed"; exit 1; }
-            done
             if ls ~/matlab_crash_dump.* >/dev/null 2>&1; then echo "exit check: crash dump found"; exit 1; fi
 
         - name: Collect crash dumps
@@ -2459,7 +2540,7 @@ echo "check_mlint: $# file(s), no errors"
             path: test-results/
   ```
 
-  The exit check leaves MATLAB with a context still open, ten times per release: libiio's exit handler calls `xmlCleanupParser()` on MATLAB's own libxml2 at process exit, which the `clear mex` tests cannot reach. Crash dumps are copied into `test-results/` so that the artifact keeps a single root.
+  The exit check leaves MATLAB with a context still open, ten times per release: libiio's exit handler calls `xmlCleanupParser()` on MATLAB's own libxml2 at process exit, which the `clear mex` tests cannot reach. Each run is its own `matlab-actions/run-command@v2` step (one MATLAB process per step), never `matlab -batch` in a shell `run:` step: with `setup-matlab@v2` on a public repository only the `run-command`, `run-tests` and `run-build` actions license MATLAB, and a bare `matlab -batch` ends with `License checkout failed / License Manager Error -1` (setup-matlab README, section Licensing, and its issue 89). The ten steps are written out because a workflow cannot loop over steps; the step that follows them keeps the crash-dump check. Crash dumps are copied into `test-results/` so that the artifact keeps a single root.
 
   The existing `c-library` job needs no change: its builds now also compile and run the mock gateway tests and `mex_api_map` on x86-64 and AArch64.
 - [ ] **Step 8:** Write `.github/workflows/matlab-probe.yml`: `on.push.branches: ['probe/**']`, one job with the steps of job `matlab` (same release matrix) up to and including the build, then `matlab-actions/run-command@v2` with `command: addpath('matlab', 'matlab/probes'); run_probes`. Run `actionlint .github/workflows/ci.yml .github/workflows/matlab-probe.yml` if `actionlint` is installed. Expected: no message.
@@ -2474,8 +2555,7 @@ echo "check_mlint: $# file(s), no errors"
   | every test passes but the step fails with a MATLAB crash at exit, or `matlabXmlStillWorks` fails | libiio's exit handler ran `xmlCleanupParser()` on MATLAB's libxml2 | fallback F1 below |
   | `libiioStaysMapped` fails | the pin did not take effect | check that `dlopen("libiio.so.1", RTLD_NOW \| RTLD_NODELETE)` resolves (print `dlerror()`), fix, re-run |
   | `clearMexAndReload` finds `iio_mex` still in `inmem` | the MEX is still locked | a handle leaked: `iio.internal.handle_count()` must be 0 before `clear mex` |
-  | the exit check fails in a later run, or finds a crash dump, although every test passed | libiio's exit handler raced MATLAB's own use of libxml2 at process exit | fallback F1 below |
-  | the exit check fails in run 1 with a licence or "command not found" message | `matlab -batch` cannot be started from a shell step on the runner | replace the loop by five `matlab-actions/run-command@v2` steps with the same command |
+  | an exit-check step (`run k of 10`) fails, or `No crash dump after the exit checks` finds a dump, although every test passed | libiio's exit handler raced MATLAB's own use of libxml2 at process exit | fallback F1 below |
   | `mex_mlint` fails with exit code 77 (and the `Locate MATLAB` warning) | the runner's installation has no `mlint` | add `SKIP_RETURN_CODE 77` to the properties of `mex_mlint` and `mex_mlint_r2023b` and record it in `matlab/README.md` (G3 then runs only on the development machine) |
   | `Set up MATLAB` fails for R2023b only | that release cannot be installed on `ubuntu-24.04` | set `runs-on: ubuntu-22.04` for that matrix entry (`include:`), re-run |
 
