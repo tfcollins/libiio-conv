@@ -433,6 +433,14 @@ class CheckMlint(unittest.TestCase):
         rc, out = self.run_mlint(os.path.join(self.dir, "missing.m"))
         self.assertEqual(rc, 1, out)
 
+    def test_mlint_that_reports_nothing(self):
+        # A program that runs but is not mlint (or an mlint that cannot start) proves nothing.
+        good = self.file("good.m", "function y = good()\ny = 1;\nend\n")
+        rc, out = self.run_mlint(good, env={"MLINT": "/bin/true"})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("check_mlint: mlint reported on 0 of 1 file(s)", out)
+        self.assertNotIn("no errors", out)
+
     def test_mlint_not_available(self):
         good = self.file("good.m", "function y = good()\ny = 1;\nend\n")
         rc, out = self.run_mlint(good, env={})

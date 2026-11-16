@@ -418,6 +418,9 @@ static void test_given(void)
 	CHECK(mt_bool_of("u_given", 1, matrix(mxSINGLE_CLASS, mxREAL, 0, 0)) == true);
 	CHECK(mt_bool_of("u_given", 1, mxCreateCellMatrix(0, 0)) == true);
 	CHECK(mt_bool_of("u_given", 1, mock_string_object()) == true);
+	/* a complex 0x0 double is [] as well (so it is on the real libmx); a 0x0x0 double is not */
+	CHECK(mt_bool_of("u_given", 1, matrix(mxDOUBLE_CLASS, mxCOMPLEX, 0, 0)) == false);
+	CHECK(mt_bool_of("u_given", 1, mock_nd_array(mxDOUBLE_CLASS, mxREAL, 0, 0, 0)) == true);
 }
 
 static void test_id(void)
@@ -595,6 +598,22 @@ static void test_str(void)
 	memcpy(mxGetData(a), nul_text, sizeof(nul_text));
 	s = mt_str_of("u_str", 1, a);
 	CHECK(s && !strcmp(s, "a"));
+
+	/* text that is not a row: a column, a matrix, N-D. Any 2-D empty char is '' */
+	CHECK(mt_raises("iio:EINVAL", "u_str", 1, mock_char_array(3, 1, 1, "abc")));
+	CHECK(msg_has("3x1 char"));
+	CHECK(mt_raises("iio:EINVAL", "u_str", 1, mock_char_array(2, 3, 1, "abcdef")));
+	CHECK(mt_raises("iio:EINVAL", "u_str", 1, mock_char_array(1, 3, 2, "abcdef")));
+	CHECK(mt_raises("iio:EINVAL", "u_str", 1, mock_char_array(0, 0, 0, "")));
+	CHECK(mt_raises("iio:EINVAL", "u_str0", 1, mock_char_array(3, 1, 1, "abc")));
+	s = mt_str_of("u_str", 1, mock_char_array(1, 3, 1, "abc"));
+	CHECK(s && !strcmp(s, "abc"));
+	CHECK(mt_call(1, out, "u_str", 1, mock_char_array(0, 3, 1, "")) == 0);
+	CHECK(is_class(out[0], mxCHAR_CLASS, 0, 0));
+	mxDestroyArray(out[0]);
+	CHECK(mt_call(1, out, "u_str", 1, mock_char_array(1, 0, 1, "")) == 0);
+	CHECK(is_class(out[0], mxCHAR_CLASS, 0, 0));
+	mxDestroyArray(out[0]);
 
 	CHECK(mt_call(1, out, "u_str0", 1, mt_empty()) == 0);
 	CHECK(is_class(out[0], mxDOUBLE_CLASS, 0, 0));

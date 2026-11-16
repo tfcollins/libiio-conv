@@ -285,7 +285,9 @@ void gw_handle_destroy(gw_id id)
 	release_cache(i);
 	if (ops.destroy)
 		ops.destroy(ptr, aux);
-	release_cache(i);       /* a cache that the destroy op attached */
+	/* A cache that the destroy op attached, or the free function of the one before it. */
+	while (tab[i].cache)
+		release_cache(i);
 
 	tab[i].state = ST_FREE;
 	if (++tab[i].gen == 0)
@@ -389,10 +391,14 @@ void gw_handle_set_cache(gw_id id, void *cache, void (*cache_free)(void *cache))
 
 	if (i == NIL)
 		return;
-	release_cache(i);
-	i = slot_of(id);        /* the free function may have destroyed the entry */
-	if (i == NIL)
-		return;
+	/* The free function may have destroyed the entry, or attached a cache of its own, which
+	 * is released like any other before the new one takes the slot. */
+	do {
+		release_cache(i);
+		i = slot_of(id);
+		if (i == NIL)
+			return;
+	} while (tab[i].cache);
 	tab[i].cache = cache;
 	tab[i].cache_free = cache_free;
 }

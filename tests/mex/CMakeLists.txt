@@ -53,3 +53,7 @@ if(IIO_CONV_BUILD_MATLAB)
 	endif()
 endif()
 set_tests_properties(${names} PROPERTIES LABELS mex TIMEOUT 30)
+# The dispatcher's own frame on the real stack, which the mock fills with 0xA5 before every
+# call: an uninitialised field of struct gw_call then fails this test instead of reading as 0
+# from AddressSanitizer's fake stack.
+set_tests_properties(test_dispatch PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_stack_use_after_return=0")

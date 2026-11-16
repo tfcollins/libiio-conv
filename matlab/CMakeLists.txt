@@ -80,9 +80,12 @@ if(IIO_CONV_BUILD_MATLAB)
 	# Adds c_mexapi_version.c, the export version script, libmex and libmx.
 	matlab_add_mex(NAME iio_mex MODULE SRC ${objs} R2018a LINK_TO iio-conv-static ${CMAKE_DL_LIBS})
 	target_link_options(iio_mex PRIVATE -Wl,--no-undefined)
+	# matlab/iio_mex.mexa64 by default, for addpath('matlab'). Every build directory writes that
+	# one file: two full builds at the same time (or for two MATLAB releases) each need their own.
+	set(IIO_MEX_OUTPUT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE PATH "Directory that receives iio_mex.mexa64")
 	set_target_properties(iio_mex PROPERTIES
 		C_VISIBILITY_PRESET default
-		LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})   # matlab/iio_mex.mexa64: addpath('matlab')
+		LIBRARY_OUTPUT_DIRECTORY ${IIO_MEX_OUTPUT_DIR})
 
 	if(IIO_CONV_BUILD_TESTS)
 		set(mlibs "LD_LIBRARY_PATH=${Matlab_ROOT_DIR}/bin/glnxa64:${Matlab_ROOT_DIR}/sys/os/glnxa64")
@@ -94,11 +97,12 @@ if(IIO_CONV_BUILD_MATLAB)
 		set_tests_properties(mex_exports mex_loadcheck PROPERTIES LABELS mex)
 		# Task 7: G3
 		add_test(NAME mex_mlint COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_mlint.sh)
-		set_tests_properties(mex_mlint PROPERTIES ENVIRONMENT "MATLAB_ROOT=${Matlab_ROOT_DIR}" LABELS mex)
+		# The lint tests are exempt from the 4 s rule: mlint of R2023b needs about 0.12 s per file.
+		set_tests_properties(mex_mlint PROPERTIES ENVIRONMENT "MATLAB_ROOT=${Matlab_ROOT_DIR}" LABELS mex TIMEOUT 120)
 		set(IIO_MLINT_MIN_ROOT /usr/local/MATLAB/R2023b CACHE PATH "MATLAB root of the minimum supported release (lint only)")
 		if(EXISTS ${IIO_MLINT_MIN_ROOT}/bin/glnxa64/mlint)
 			add_test(NAME mex_mlint_r2023b COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_mlint.sh)
-			set_tests_properties(mex_mlint_r2023b PROPERTIES ENVIRONMENT "MATLAB_ROOT=${IIO_MLINT_MIN_ROOT}" LABELS mex)
+			set_tests_properties(mex_mlint_r2023b PROPERTIES ENVIRONMENT "MATLAB_ROOT=${IIO_MLINT_MIN_ROOT}" LABELS mex TIMEOUT 120)
 		endif()
 	endif()
 endif()

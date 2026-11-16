@@ -593,6 +593,20 @@ static void test_special_arrays(void)
 	a = mxCreateNumericMatrix(4, 2, mxINT16_CLASS, mxCOMPLEX);
 	CHECK(mxGetNumberOfDimensions(a) == 2);
 	mxDestroyArray(a);
+
+	a = mock_char_array(3, 1, 1, "abc");            /* a column of text */
+	CHECK(mxIsChar(a) && !mxIsNumeric(a));
+	CHECK(mxGetNumberOfDimensions(a) == 2 && mxGetM(a) == 3 && mxGetN(a) == 1);
+	CHECK(mxGetElementSize(a) == 2 && mxGetNumberOfElements(a) == 3);
+	CHECK(((mxChar *)mxGetData(a))[0] == 'a' && ((mxChar *)mxGetData(a))[2] == 'c');
+	mxDestroyArray(a);
+	a = mock_char_array(1, 3, 2, "abcdef");
+	CHECK(mxIsChar(a) && mxGetNumberOfDimensions(a) == 3 && mxGetM(a) == 1 && mxGetN(a) == 6);
+	CHECK(((mxChar *)mxGetData(a))[5] == 'f');
+	mxDestroyArray(a);
+	a = mock_char_array(0, 3, 1, "");
+	CHECK(mxIsChar(a) && mxIsEmpty(a) && mxGetM(a) == 0 && mxGetN(a) == 3 && mxGetData(a) == NULL);
+	mxDestroyArray(a);
 	CHECK(mock_live() == live);
 }
 

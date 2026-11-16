@@ -17,6 +17,9 @@ fi
 # mlint always exits 0 and writes to stderr. The extra /dev/null argument forces the
 # "========== file ==========" header even when only one file is checked.
 out=$("$mlint" -id -severity -m2 "$@" /dev/null 2>&1 | grep -v '^========== /dev/null' | grep -v "'/dev/null'")
+# Proof that mlint ran: one header per file. A program that prints nothing has checked nothing.
+n=$(printf '%s\n' "$out" | grep -c '^========== ')
+[ "$n" -eq $# ] || { echo "check_mlint: mlint reported on $n of $# file(s)"; exit 1; }
 if printf '%s\n' "$out" | grep -q '^L [0-9]'; then
 	printf '%s\n' "$out" | awk '/^==========/ { file = $2; next } /^L [0-9]/ { print file ": " $0 }'
 	echo "check_mlint: FAILED"

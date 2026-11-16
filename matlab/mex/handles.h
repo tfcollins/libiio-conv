@@ -45,9 +45,10 @@ void gw_handle_reset(uint32_t seed);
 gw_id gw_handle_add(enum gw_type type, void *ptr, gw_id parent, bool owned,
 		const struct gw_ops *ops, void *aux);
 
-/* *id = the live entry (type, ptr) if there is one, else a new borrowed child of parent
- * (no ops, no aux). ptr == NULL gives *id = 0 and returns 0.
- * Returns 0, -EBADF (stale parent) or -ENOMEM. */
+/* *id = the live entry (type, ptr) if there is one, whatever parent is given (another one,
+ * zero or a stale id), else a new borrowed child of parent (no ops, no aux). ptr == NULL gives
+ * *id = 0 and returns 0. Returns 0, -EBADF (a new entry is needed and parent is zero or
+ * stale) or -ENOMEM. */
 int gw_handle_borrow(enum gw_type type, const void *ptr, gw_id parent, gw_id *id);
 
 /* pre_destroy(entry); destroy every child, newest first, recursively; release the cache slot;
@@ -67,7 +68,10 @@ uint32_t gw_handle_flags(gw_id id);                   /* 0 for a new entry and f
 void gw_handle_set_flags(gw_id id, uint32_t flags);   /* ignored for a stale id */
 /* Cache slot: a second attachment, for state that another source file keeps on an entry
  * (cmd_block.c: the converter cache of a buffer stream). Allowed on borrowed entries too.
- * Setting it first releases the previous cache with its cache_free; cache_free may be NULL. */
+ * Setting it first releases the previous cache with its cache_free; cache_free may be NULL.
+ * The slot is already empty while cache_free runs. cache_free may attach a cache to the entry
+ * (released in turn before a cache being set is stored, and at the latest when the entry is
+ * destroyed) and may destroy the entry (a cache being set is then not stored: stale id). */
 void *gw_handle_cache(gw_id id);                      /* NULL if none or stale */
 void gw_handle_set_cache(gw_id id, void *cache, void (*cache_free)(void *cache));   /* ignored for a stale id */
 size_t gw_handle_count(void);                         /* live entries */

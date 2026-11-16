@@ -101,6 +101,13 @@ static void test_tree(void)
 	x = 99;
 	CHECK(gw_handle_borrow(GW_T_BLOCK, E, t.a, &x) == 0 && x == t.e);
 	CHECK(gw_handle_owned(t.e));
+	/* ... and when the parent given is stale or zero: the entry that exists is the answer */
+	x = 99;
+	CHECK(gw_handle_borrow(GW_T_DEVICE, C, 12345, &x) == 0 && x == t.c);
+	x = 99;
+	CHECK(gw_handle_borrow(GW_T_DEVICE, C, 0, &x) == 0 && x == t.c);
+	CHECK(gw_handle_parent(t.c) == t.a);
+	CHECK(gw_handle_count() == 6);
 	chan = 0;
 	CHECK(gw_handle_borrow(GW_T_CHANNEL, C, t.a, &chan) == 0);
 	CHECK(chan != 0 && chan != t.c);
@@ -317,7 +324,7 @@ static void test_ops_see_the_entry(void)
 }
 
 /* A child whose pre_destroy destroys its own parent: nothing runs twice, nothing hangs. */
-static gw_id up_parent;
+static gw_id up_parent, up_child, up_parent_seen = 99, up_root_seen = 99;
 static int up_runs[4];
 
 static void up_child_pre(void *ptr, void *aux)
@@ -333,6 +340,9 @@ static void up_child_destroy(void *ptr, void *aux)
 	(void)ptr;
 	(void)aux;
 	up_runs[1]++;
+	/* the parent is gone by now: the child has none, not the id of a destroyed entry */
+	up_parent_seen = gw_handle_parent(up_child);
+	up_root_seen = gw_handle_root(up_child);
 }
 
 static void up_parent_pre(void *ptr, void *aux)
@@ -360,14 +370,222 @@ static void test_child_destroys_parent(void)
 	up_parent = gw_handle_add(GW_T_CONTEXT, A, 0, true, &ops_up_parent, NULL);
 	other = gw_handle_add(GW_T_MASK, F, up_parent, true, &ops, NULL);
 	child = gw_handle_add(GW_T_BUFFER_STREAM, B, up_parent, true, &ops_up_child, NULL);
+	up_child = child;
+	CHECK(gw_handle_parent(child) == up_parent && gw_handle_root(child) == up_parent);
 	oplog[0] = '\0';
 	gw_handle_destroy(child);
 	CHECK(up_runs[0] == 1 && up_runs[1] == 1 && up_runs[2] == 1 && up_runs[3] == 1);
+	CHECK(up_parent_seen == 0);
+	CHECK(up_root_seen == 0);
 	CHECK(!strcmp(oplog, "pF dF "));
 	CHECK(gw_handle_count() == 0);
 	CHECK(gw_handle_type(other) == GW_T_NONE);
 	CHECK(gw_handle_type(child) == GW_T_NONE);
 	CHECK(gw_handle_type(up_parent) == GW_T_NONE);
+}
+
+/* A pre_destroy op that makes the table grow: the entry is still found afterwards. */
+#define N_PRE_GROW 200
+static char grow_pool[N_PRE_GROW];
+static gw_id grow_id, grow_found = 99, grow_child_found = 99;
+static void *grow_ptr;
+static uint32_t grow_flags;
+static int grow_added, grow_kids_destroyed;
+
+static void grow_kid_destroy(void *ptr, void *aux)
+{
+	(void)ptr;
+	(void)aux;
+	grow_kids_destroyed++;
+}
+
+static const struct gw_ops ops_grow_kid = { NULL, grow_kid_destroy };
+
+static void grow_pre(void *ptr, void *aux)
+{
+	(void)aux;
+	for (int i = 0; i < N_PRE_GROW; i++)
+		grow_added += gw_handle_add(GW_T_BLOCK, &grow_pool[i], grow_id, true, &ops_grow_kid, NULL) != 0;
+	grow_found = gw_handle_find(GW_T_BUFFER_STREAM, ptr);
+	grow_ptr = gw_handle_ptr(grow_id, GW_T_BUFFER_STREAM);
+	grow_flags = gw_handle_flags(grow_id);
+	grow_child_found = gw_handle_find(GW_T_BLOCK, &grow_pool[N_PRE_GROW - 1]);
+}
+
+static const struct gw_ops ops_grow = { grow_pre, op_destroy };
+
+static void test_pre_destroy_grows_the_table(void)
+{
+	gw_handle_reset(7);                             /* an empty table: 64 slots at the first add */
+	grow_id = gw_handle_add(GW_T_BUFFER_STREAM, P, 0, true, &ops_grow, NULL);
+	gw_handle_set_flags(grow_id, 5);
+	oplog[0] = '\0';
+	gw_handle_destroy(grow_id);
+	CHECK(grow_added == N_PRE_GROW);
+	CHECK(grow_found == grow_id);
+	CHECK(grow_ptr == P);
+	CHECK(grow_flags == 5);
+	CHECK(grow_child_found != 0 && grow_child_found != grow_id);
+	CHECK(grow_kids_destroyed == N_PRE_GROW);
+	CHECK(!strcmp(oplog, "dP "));
+	CHECK(gw_handle_count() == 0);
+	CHECK(gw_handle_find(GW_T_BUFFER_STREAM, P) == 0);
+	CHECK(gw_handle_find(GW_T_BLOCK, &grow_pool[0]) == 0);
+}
+
+/* The cache slot and re-entrancy: what a destroy op and a cache free function may do. */
+static gw_id cr_id, cr_other;
+static int cr_free_runs[4];             /* per cache K1, K2, K3, AUX */
+static void *cr_seen_in_free = P;       /* gw_handle_cache() of the entry while its cache is freed */
+static void *cr_seen_in_destroy = P;
+static int cr_mode;
+
+static int cr_index(const void *cache)
+{
+	return cache == K1 ? 0 : cache == K2 ? 1 : cache == K3 ? 2 : 3;
+}
+
+static void cr_free_plain(void *cache)
+{
+	cr_free_runs[cr_index(cache)]++;
+	log_add('k', cache);
+}
+
+enum { CR_LOOK = 1, CR_ATTACH, CR_DESTROY };
+
+/* The free function of K1. */
+static void cr_free(void *cache)
+{
+	cr_free_runs[cr_index(cache)]++;
+	log_add('k', cache);
+	cr_seen_in_free = gw_handle_cache(cr_id);       /* the slot is already empty */
+	if (cr_free_runs[0] > 1)                        /* freed twice: do not recurse for ever */
+		return;
+	if (cr_mode == CR_ATTACH) {
+		gw_handle_set_cache(cr_id, K2, cr_free_plain);
+	} else if (cr_mode == CR_DESTROY) {
+		gw_handle_destroy(cr_id);
+		/* the slot of the destroyed entry is used again at once, by another entry */
+		cr_other = gw_handle_add(GW_T_SCAN, S, 0, true, &ops_destroy_only, NULL);
+	}
+}
+
+/* A destroy op that attaches a cache to its own, dying entry. */
+static void cr_destroy(void *ptr, void *aux)
+{
+	(void)aux;
+	log_add('d', ptr);
+	cr_seen_in_destroy = gw_handle_cache(cr_id);    /* released before the op ran */
+	gw_handle_set_cache(cr_id, K3, cr_free_plain);
+}
+
+static const struct gw_ops ops_cr = { NULL, cr_destroy };
+
+static void cr_start(int mode)
+{
+	gw_handle_reset(7);
+	memset(cr_free_runs, 0, sizeof(cr_free_runs));
+	cr_seen_in_free = cr_seen_in_destroy = P;
+	cr_other = 0;
+	cr_mode = mode;
+	oplog[0] = '\0';
+}
+
+static void test_cache_reentrancy(void)
+{
+	/* a cache attached in the entry's own destroy op is released, once */
+	cr_start(0);
+	cr_id = gw_handle_add(GW_T_BUFFER_STREAM, B, 0, true, &ops_cr, NULL);
+	gw_handle_set_cache(cr_id, K1, cr_free_plain);
+	gw_handle_destroy(cr_id);
+	CHECK(!strcmp(oplog, "kK1 dB kK3 "));
+	CHECK(cr_seen_in_destroy == NULL);
+	CHECK(cr_free_runs[0] == 1 && cr_free_runs[2] == 1);
+	CHECK(gw_handle_count() == 0);
+	CHECK(gw_handle_cache(cr_id) == NULL);
+
+	/* the free function looks at its entry: the slot is empty before it runs (set and destroy) */
+	cr_start(CR_LOOK);
+	cr_id = gw_handle_add(GW_T_BUFFER_STREAM, B, 0, true, &ops_destroy_only, NULL);
+	gw_handle_set_cache(cr_id, K1, cr_free);
+	gw_handle_set_cache(cr_id, K2, cr_free_plain);
+	CHECK(cr_seen_in_free == NULL);
+	CHECK(gw_handle_cache(cr_id) == K2);
+	gw_handle_set_cache(cr_id, K1, cr_free);
+	CHECK(!strcmp(oplog, "kK1 kK2 "));
+	cr_free_runs[0] = 0;
+	cr_seen_in_free = P;
+	gw_handle_destroy(cr_id);
+	CHECK(cr_seen_in_free == NULL);
+	CHECK(!strcmp(oplog, "kK1 kK2 kK1 dB "));
+	CHECK(cr_free_runs[0] == 1);
+
+	/* the free function attaches a cache to its entry: that one is released too, and the
+	 * cache being set ends up in the slot; nothing is freed twice, nothing is dropped */
+	cr_start(CR_ATTACH);
+	cr_id = gw_handle_add(GW_T_BUFFER_STREAM, B, 0, true, &ops_destroy_only, NULL);
+	gw_handle_set_cache(cr_id, K1, cr_free);
+	gw_handle_set_cache(cr_id, K3, cr_free_plain);
+	CHECK(!strcmp(oplog, "kK1 kK2 "));
+	CHECK(gw_handle_cache(cr_id) == K3);
+	CHECK(cr_free_runs[0] == 1 && cr_free_runs[1] == 1 && cr_free_runs[2] == 0);
+	gw_handle_destroy(cr_id);
+	CHECK(!strcmp(oplog, "kK1 kK2 kK3 dB "));
+	/* the same at a teardown: K1's free function attaches K2 to the dying entry */
+	cr_start(CR_ATTACH);
+	cr_id = gw_handle_add(GW_T_BUFFER_STREAM, B, 0, true, &ops_destroy_only, NULL);
+	gw_handle_set_cache(cr_id, K1, cr_free);
+	gw_handle_destroy(cr_id);
+	CHECK(!strcmp(oplog, "kK1 dB kK2 "));
+	CHECK(cr_free_runs[0] == 1 && cr_free_runs[1] == 1);
+	CHECK(gw_handle_count() == 0);
+
+	/* the free function destroys its entry: the cache being set is not attached to
+	 * anything, least of all to the entry that took over the slot */
+	cr_start(CR_DESTROY);
+	cr_id = gw_handle_add(GW_T_BUFFER_STREAM, B, 0, true, &ops_destroy_only, NULL);
+	gw_handle_set_cache(cr_id, K1, cr_free);
+	gw_handle_set_cache(cr_id, K3, cr_free_plain);
+	CHECK(!strcmp(oplog, "kK1 dB "));
+	CHECK(cr_free_runs[0] == 1 && cr_free_runs[2] == 0);
+	CHECK(gw_handle_type(cr_id) == GW_T_NONE);
+	CHECK(cr_other != 0 && (uint32_t)cr_other == (uint32_t)cr_id);   /* the same slot */
+	CHECK(gw_handle_cache(cr_other) == NULL);
+	CHECK(gw_handle_count() == 1);
+	gw_handle_destroy_all();
+	CHECK(!strcmp(oplog, "kK1 dB dS "));
+	CHECK(cr_free_runs[2] == 0);
+}
+
+/* One pointer under every type: each (type, pointer) pair is an entry of its own. */
+static void test_one_pointer_every_type(void)
+{
+	gw_id root, id[GW_T_COUNT] = { 0 };
+	int bad = 0;
+
+	gw_handle_reset(7);
+	root = gw_handle_add(GW_T_CONTEXT, A, 0, true, NULL, NULL);
+	for (int i = 0; i < 100; i++)                   /* beyond the first 64 slots */
+		bad += gw_handle_add(GW_T_BLOCK, &grow_pool[i], root, true, NULL, NULL) == 0;
+	for (int t = GW_T_NONE + 1; t < GW_T_COUNT; t++)
+		bad += gw_handle_borrow((enum gw_type)t, Z, root, &id[t]) != 0 || id[t] == 0;
+	CHECK(bad == 0);
+	CHECK(gw_handle_count() == 101 + GW_T_COUNT - 1);
+	for (int t = GW_T_NONE + 1; t < GW_T_COUNT; t++) {
+		bad += gw_handle_find((enum gw_type)t, Z) != id[t];
+		bad += gw_handle_type(id[t]) != (enum gw_type)t;
+		for (int u = GW_T_NONE + 1; u < t; u++)
+			bad += id[u] == id[t];
+	}
+	CHECK(bad == 0);
+	/* one of them gone: the others are still found, and only by their own type */
+	gw_handle_destroy(id[GW_T_BUFFER]);             /* borrowed entries can be destroyed directly */
+	CHECK(gw_handle_find(GW_T_BUFFER, Z) == 0);
+	for (int t = GW_T_NONE + 1; t < GW_T_COUNT; t++)
+		bad += t != GW_T_BUFFER && gw_handle_find((enum gw_type)t, Z) != id[t];
+	CHECK(bad == 0);
+	gw_handle_destroy_all();
+	CHECK(gw_handle_count() == 0);
 }
 
 static void test_destroy_all(void)
@@ -536,6 +754,9 @@ int main(void)
 	test_flags_and_cache();
 	test_ops_see_the_entry();
 	test_child_destroys_parent();
+	test_pre_destroy_grows_the_table();
+	test_cache_reentrancy();
+	test_one_pointer_every_type();
 	test_destroy_all();
 	test_growth();
 	test_reset();

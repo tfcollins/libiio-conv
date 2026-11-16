@@ -34,7 +34,9 @@ static bool file_is(const char *path, const char *want)
 
 int main(void)
 {
+	/* The file is appended to: what it held before the gateway's first call stays in front. */
 	static const char six[] =
+		"earlier line\n"
 		"> mex_handle_count\n"
 		"< mex_handle_count ok\n"
 		"> t_ok\n"
@@ -45,6 +47,7 @@ int main(void)
 	const char *tmp = getenv("TMPDIR");
 	char dir[PATH_MAX], path[PATH_MAX + 16];
 	mxArray *out[1] = { NULL };
+	FILE *f;
 
 	snprintf(dir, sizeof(dir), "%s/iio-mex-trace-XXXXXX", tmp && *tmp ? tmp : "/tmp");
 	if (!mkdtemp(dir))
@@ -52,9 +55,12 @@ int main(void)
 	snprintf(path, sizeof(path), "%s/trace.log", dir);
 	if (setenv("IIO_MEX_TRACE", path, 1))
 		return 2;
+	f = fopen(path, "w");
+	if (!f || fputs("earlier line\n", f) < 0 || fclose(f))
+		return 2;
 
 	CHECK(mt_dbl_of("mex_handle_count", 0) == 0);
-	CHECK(file_is(path, "> mex_handle_count\n< mex_handle_count ok\n"));   /* flushed line by line */
+	CHECK(file_is(path, "earlier line\n> mex_handle_count\n< mex_handle_count ok\n"));   /* flushed line by line */
 	CHECK(mt_dbl_of("t_ok", 0) == 42);
 	CHECK(mt_raises("iio:ENOSYS", "no_such", 0));
 	CHECK(file_is(path, six));
@@ -76,6 +82,22 @@ int main(void)
 	mock_exit_matlab();
 	CHECK(mt_dbl_of("t_ok", 0) == 42);     /* a new start without the variable: no file access */
 	CHECK(file_is(path, more));
+
+	/* a later load with the variable set again goes on at the end of the same file */
+	mock_exit_matlab();
+	CHECK(setenv("IIO_MEX_TRACE", path, 1) == 0);
+	CHECK(mt_dbl_of("t_ok", 0) == 42);
+	snprintf(more, sizeof(more), "%s> t_ok\n< t_ok iio:EINVAL\n> t_ok\n> t_ok\n< t_ok ok\n> t_ok\n< t_ok ok\n", six);
+	CHECK(file_is(path, more));
+
+	/* an empty variable is no variable: the gateway works and touches no file */
+	mock_exit_matlab();
+	CHECK(setenv("IIO_MEX_TRACE", "", 1) == 0);
+	CHECK(mt_dbl_of("t_ok", 0) == 42);
+	CHECK(mt_raises("iio:ENOSYS", "no_such", 0));
+	CHECK(file_is(path, more));
+	CHECK(unsetenv("IIO_MEX_TRACE") == 0);
+	mock_exit_matlab();
 
 	CHECK(unlink(path) == 0);
 	CHECK(mt_dbl_of("t_ok", 0) == 42);

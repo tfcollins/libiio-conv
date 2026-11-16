@@ -24,6 +24,9 @@
  * - mock_fail_alloc() counts only allocations made while mock_call() runs, so a test can
  *   build its inputs after arming it.
  * - mexUnlock without a lock is ignored, as in MATLAB.
+ * - mock_call() fills the stack below it with 0xA5 before it calls mexFunction, so that an
+ *   uninitialised local of the gateway reads the same, and not as zero, in every call (on
+ *   the real stack only; see scribble_stack()).
  * Not thread safe: only the thread that runs mock_call() may use the runtime. */
 #include "mex.h"
 #include "mxmock.h"
@@ -996,6 +999,19 @@ int mexAtExit(mex_exit_fn exit_fcn)
 
 /* ------------------------------------------------------------------ mxmock.h */
 
+/* MATLAB promises nothing about the stack either. Whatever mexFunction and the functions it
+ * calls leave uninitialised reads as 0xA5 in every call, not as what the call before left
+ * there. It relies on the next frames reusing this one's memory: true on the real stack, not
+ * on AddressSanitizer's fake stack, so a test that wants it under ASan runs with
+ * ASAN_OPTIONS=detect_stack_use_after_return=0 (tests/mex/CMakeLists.txt: test_dispatch). */
+static __attribute__((noinline)) void scribble_stack(void)
+{
+	volatile unsigned char junk[32768];
+
+	for (size_t i = 0; i < sizeof(junk); i++)
+		junk[i] = 0xA5;
+}
+
 int mock_call(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
 	int nout = nlhs > 1 ? nlhs : 1;
@@ -1019,6 +1035,7 @@ int mock_call(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 	err_msg[0] = '\0';
 	alloc_failed = false;
 	exit_kind = 0;
+	scribble_stack();
 	in_call = true;
 	if (setjmp(call_env) == 0)
 		mexFunction(nlhs, plhs, nrhs, prhs);
@@ -1164,5 +1181,21 @@ mxArray *mock_nd_array(mxClassID cls, mxComplexity c, size_t d0, size_t d1, size
 		die("%s: class id %d is not numeric", fn, (int)cls);
 	a = new_array(fn, cls, d0, d1, d2, size, mul_dims(fn, mul_dims(fn, d0, d1), d2), 0);
 	a->is_complex = c == mxCOMPLEX;
+	return a;
+}
+
+mxArray *mock_char_array(size_t d0, size_t d1, size_t d2, const char *text)
+{
+	const char *fn = "mock_char_array";
+	size_t count = mul_dims(fn, mul_dims(fn, d0, d1), d2);
+	mxArray *a;
+	mxChar *d;
+
+	if (!text || strlen(text) != count)
+		die("%s: the text must have exactly %zu characters", fn, count);
+	a = new_array(fn, mxCHAR_CLASS, d0, d1, d2, sizeof(mxChar), count, 0);
+	d = a->data;
+	for (size_t i = 0; i < count; i++)
+		d[i] = (unsigned char)text[i];
 	return a;
 }

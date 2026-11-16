@@ -61,6 +61,12 @@ static int t_msg(struct gw_call *c)
 	return gw_fail(c, -EIO, "disk %d", 3);
 }
 
+/* A message longer than err_msg: cut to 255 characters, never past the end. */
+static int t_msg_long(struct gw_call *c)
+{
+	return gw_fail(c, -EIO, "%0300d", 7);
+}
+
 static int t_out_then_fail(struct gw_call *c)
 {
 	int ret = gw_ret_double(c, 0, 5);
@@ -144,9 +150,11 @@ static int t_range(struct gw_call *c)
 
 static const struct gw_cmd local_cmds[] = {
 	GW_XCMD("t_ok", t_ok, 0, 0, 1),
+	GW_XCMD("t", t_ok, 0, 0, 1),      /* what a column 't_ok' would read as, taken by its columns */
 	GW_XCMD("t_two", t_two, 0, 0, 2),
 	GW_XCMD("t_errno", t_errno, 1, 1, 0),
 	GW_XCMD("t_msg", t_msg, 0, 0, 0),
+	GW_XCMD("t_msg_long", t_msg_long, 0, 0, 0),
 	GW_XCMD("t_out_then_fail", t_out_then_fail, 0, 0, 1),
 	GW_XCMD("t_forget", t_forget, 0, 0, 1),
 	GW_XCMD("t_add", t_add, 0, 0, 1),
@@ -204,6 +212,25 @@ static void test_lookup(void)
 	mxDestroyArray(cell);
 	mxDestroyArray(text);
 	mxDestroyArray(obj);
+
+	/* text that is not a row is not a name, even where its first row or its elements
+	 * spell a registered one */
+	CHECK(mt_dbl_of("t", 0) == 42);
+	{
+		mxArray *shapes[] = {
+			mock_char_array(4, 1, 1, "t_ok"), mock_char_array(1, 2, 2, "t_ok"),
+			mock_char_array(2, 2, 1, "t_ok"), mock_char_array(16, 1, 1, "mex_handle_count"),
+			mock_char_array(1, 8, 2, "mex_handle_count"), mock_char_array(0, 4, 1, ""),
+		};
+
+		for (size_t i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++) {
+			in[0] = shapes[i];
+			CHECK(mock_call(1, out, 1, in) == 1);
+			CHECK(raised("iio:ENOSYS", NULL));
+			CHECK(strstr(mock_err_msg(), "iio_mex: the first argument must be a command name") != NULL);
+			mxDestroyArray(shapes[i]);
+		}
+	}
 
 	/* names that are not registered: the match is exact and case-sensitive */
 	CHECK(mt_raises("iio:ENOSYS", "no_such", 0));
@@ -293,9 +320,14 @@ static void test_errors(void)
 
 	CHECK(mt_raises("iio:EIO", "t_msg", 0));
 	CHECK(!strcmp(mock_err_msg(), "t_msg: disk 3"));
-	/* the message of one call does not leak into the next */
+	/* The message of one call does not leak into the next, and a command that sets none
+	 * gets the text of its errno, whatever the stack held (the mock fills it with 0xA5). */
 	CHECK(mt_raises("iio:EIO", "t_errno", 1, mt_dbl(5)));
-	CHECK(strstr(mock_err_msg(), "disk") == NULL);
+	CHECK(!strcmp(mock_err_msg(), "t_errno: Input/output error (-5)"));
+	CHECK(mt_raises("iio:EIO", "t_msg_long", 0));
+	CHECK(strlen(mock_err_msg()) == strlen("t_msg_long: ") + 255);
+	CHECK(mt_raises("iio:ENOENT", "t_errno", 1, mt_dbl(2)));
+	CHECK(!strcmp(mock_err_msg(), "t_errno: No such file or directory (-2)"));
 
 	CHECK(mt_call(1, out, "t_out_then_fail", 0) == 1);
 	CHECK(raised("iio:EBUSY", NULL));

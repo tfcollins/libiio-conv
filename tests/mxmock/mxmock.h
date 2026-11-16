@@ -40,7 +40,21 @@ mxArray *mock_sparse_double(size_t m, size_t n);    /* mxIsSparse true, class do
  * mxGetN d1 * d2 (the product of the trailing dimensions), so only the dimension count tells it
  * from a d0-by-(d1*d2) matrix. */
 mxArray *mock_nd_array(mxClassID cls, mxComplexity c, size_t d0, size_t d1, size_t d2);
+/* char d0-by-d1-by-d2 array (a matrix when d2 == 1) whose elements, in storage order (first
+ * dimension fastest), are the characters of text; strlen(text) must be d0 * d1 * d2. For the
+ * char arrays mxCreateString cannot make: a column, a matrix, N-D, 0-by-3. */
+mxArray *mock_char_array(size_t d0, size_t d1, size_t d2, const char *text);
 
-/* Known mock gaps (behaviour of real MATLAB that no local test can show): add one line per gap here. */
+/* Known mock gaps (behaviour of real MATLAB that no local test can show): add one line per gap here.
+ * - mxArrayToString converts to UTF-8; the real one converts to the locale's character set.
+ * - mxGetLogicals of an array that is not logical, mxGetScalar of an empty array, a cell, a
+ *   struct or an object, and mxGetField / mxGetCell beyond the end abort; the real ones return
+ *   the data, an undefined value, or NULL.
+ * - mock_string_object() has class id mxOPAQUE_CLASS; of a real string only the class name is certain.
+ * - mock_sparse_double() always has room for exactly one non-zero element.
+ * - mock_fail_alloc() counts only allocations made while mock_call() runs.
+ * - The stack is filled with 0xA5 before mexFunction runs (uninitialised locals), which has an
+ *   effect on the real stack only, not on AddressSanitizer's fake stack.
+ * (tests/mxmock/mxmock.c, at its top, gives the reason for each choice.) */
 
 #endif

@@ -147,7 +147,7 @@ static int wrong_type(struct gw_call *c, int k, enum gw_type want, enum gw_type 
 static int handle_arg(struct gw_call *c, int k, enum gw_type type, void *ptr, gw_id *id, bool zero_ok)
 {
 	void *p = NULL;
-	gw_id h;
+	gw_id h = 0;            /* = 0: gcc -O3 does not see that a failed gw_arg_id() returns non-zero */
 	int ret = gw_arg_id(c, k, &h);
 
 	if (ret)
@@ -183,7 +183,7 @@ int gw_arg_handle0(struct gw_call *c, int k, enum gw_type type, void *ptr, gw_id
 int gw_arg_destroy(struct gw_call *c, int k, enum gw_type type)
 {
 	enum gw_type got;
-	gw_id id;
+	gw_id id = 0;           /* as in handle_arg() */
 	int ret = gw_arg_id(c, k, &id);
 
 	if (ret)
@@ -245,7 +245,7 @@ int gw_arg_int(struct gw_call *c, int k, long long lo, long long hi, long long *
 
 int gw_arg_index(struct gw_call *c, int k, unsigned int *v)
 {
-	long long x;
+	long long x = 0;        /* as in handle_arg() */
 	int ret = gw_arg_int(c, k, 0, UINT_MAX, &x);
 
 	if (!ret)
