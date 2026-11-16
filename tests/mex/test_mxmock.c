@@ -7,6 +7,7 @@
 #include "test_util.h"
 
 #include <signal.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 
@@ -149,6 +150,9 @@ static int child_fate(void (*fn)(const char *), const char *arg)
 		struct rlimit no_core = { 0, 0 };
 
 		setrlimit(RLIMIT_CORE, &no_core);
+		/* The limit does not stop a core_pattern that is a pipe (apport, systemd-coredump),
+		 * and dumping a sanitized process there takes about a second per abort. */
+		prctl(PR_SET_DUMPABLE, 0);
 		if (!freopen("/dev/null", "w", stderr))
 			_exit(0);
 		fn(arg);

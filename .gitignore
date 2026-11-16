@@ -2,3 +2,4 @@ build*/
 deps/src/
 deps/install/
 .superpowers/
+matlab/*.mexa64

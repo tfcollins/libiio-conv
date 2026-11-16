@@ -14,6 +14,11 @@ option(IIO_CONV_WITH_LIBIIO "Build the libiio v1 entry points" ON)
 option(IIO_CONV_SANITIZE "Build with ASan and UBSan" OFF)
 option(IIO_CONV_BUILD_TESTS "Build tests" ON)
 option(IIO_CONV_BUILD_BENCH "Build benchmarks" OFF)
+option(IIO_CONV_BUILD_MATLAB "Build matlab/iio_mex.mexa64 (needs -DMatlab_ROOT_DIR=<MATLAB root>)" OFF)
+option(IIO_CONV_MEX_SANITIZE "ASan and UBSan for the gateway's mock-based tests" ON)
+option(IIO_CONV_API_STRICT "check_api.py: every command of matlab/api-map.tsv must exist" OFF)
+set(IIO_MEX_GROUPS toplevel context attr device channel buffer block stream event lowlevel conv)
+set(IIO_FIXTURE_XML ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/iio_fixture.xml)
 
 add_compile_options(-Wall -Wextra -Werror=implicit-function-declaration)
 # Results must not depend on whether the compiler fuses a*b+c: every backend
@@ -75,6 +80,11 @@ set_target_properties(iio-conv PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0
 
 if(IIO_CONV_BUILD_TESTS)
 	enable_testing()
+endif()
+if(IIO_CONV_WITH_LIBIIO AND (IIO_CONV_BUILD_TESTS OR IIO_CONV_BUILD_MATLAB))
+	add_subdirectory(matlab)
+endif()
+if(IIO_CONV_BUILD_TESTS)
 	add_subdirectory(tests)
 endif()
 if(IIO_CONV_BUILD_BENCH)
