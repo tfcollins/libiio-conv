@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Self-test of the gate scripts check_api.py (G4) and check_mlint.sh (G3).
+"""Self-test of the gate scripts check_api.py (G4), check_mlint.sh (G3) and check_junit.py (CI).
 
 Each check_api case builds a tiny source tree in a temporary directory (a fake iio.h
 with three functions, matlab/api-map.tsv, matlab/mex/cmd_x.c, matlab/+iio/*.m) and runs
@@ -17,6 +17,7 @@ import unittest
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 CHECK_API = os.path.join(TOOLS, "check_api.py")
 CHECK_MLINT = os.path.join(TOOLS, "check_mlint.sh")
+CHECK_JUNIT = os.path.join(TOOLS, "check_junit.py")
 sys.path.insert(0, TOOLS)
 sys.dont_write_bytecode = True   # no __pycache__ in the source tree
 import check_api  # noqa: E402
@@ -379,6 +380,106 @@ class CheckApi(unittest.TestCase):
         self.put("matlab/+iio/other.m", "function h = other()\nh = iio_mex('create_context', [], 'x');\nend\n")
         self.fails("iio.Context: not found in", "--strict")
         self.ok()
+
+
+def junit(*cases):
+    """A JUnit document as matlab.unittest writes it: one testsuite per test class."""
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n<testsuites>\n'
+            '  <testsuite errors="0" failures="0" name="tThing" skipped="0" tests="%d" time="0.5">\n%s'
+            '  </testsuite>\n</testsuites>\n' % (len(cases), "".join("    %s\n" % c for c in cases)))
+
+
+def case(name, time="0.25", classname="tThing", inner=""):
+    head = '<testcase classname="%s" name="%s" time="%s"' % (classname, name, time)
+    return head + ("/>" if not inner else ">%s</testcase>" % inner)
+
+
+class CheckJunit(unittest.TestCase):
+    LIMITS = ("--min-tests", "2", "--max-seconds", "4", "--max-skipped", "0")
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.xml = os.path.join(self._tmp.name, "matlab.xml")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_junit(self, text, *limits):
+        if text is None:   # no file at all
+            if os.path.exists(self.xml):
+                os.remove(self.xml)
+        else:
+            with open(self.xml, "w", encoding="utf-8") as f:
+                f.write(text)
+        p = subprocess.run([sys.executable, CHECK_JUNIT, self.xml, *(limits or self.LIMITS)],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        return p.returncode, p.stdout
+
+    def violations(self, text, *parts, limits=()):
+        rc, out = self.run_junit(text, *limits)
+        self.assertEqual(rc, 1, out)
+        lines = out.splitlines()
+        for l in lines:
+            self.assertTrue(l.startswith("check_junit: "), l)
+        self.assertRegex(lines[-1], r"^check_junit: \d+ tests, %d violation\(s\)$" % (len(lines) - 1))
+        for part in parts:
+            self.assertTrue([l for l in lines[:-1] if part in l], "no line contains %r in:\n%s" % (part, out))
+        return lines
+
+    def test_four_documents_and_a_missing_file(self):
+        # the plan's case: 0, 1 (failure), 1 (slow), 1 (skipped), 2 (no file)
+        rc, out = self.run_junit(junit(case("a"), case("b")))
+        self.assertEqual((rc, out), (0, "check_junit: 2 tests, 0 violation(s)\n"))
+        self.violations(junit(case("a"), case("b", inner='<failure type="x">no</failure>')), "tThing.b: failure")
+        self.violations(junit(case("a"), case("b", time="5.2")), "tThing.b: took 5.2 s")
+        self.violations(junit(case("a"), case("b", inner="<skipped/>")), "1 skipped")
+        rc, out = self.run_junit(None)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("check_junit: ", out)
+
+    def test_too_few_tests(self):
+        lines = self.violations(junit(case("a")), "1 tests, fewer than the minimum 2")
+        self.assertEqual(len(lines), 2)
+        # an empty result file is the same violation, not a pass
+        self.violations("<testsuites/>", "0 tests, fewer than the minimum 2")
+
+    def test_error_element_and_one_line_per_violation(self):
+        lines = self.violations(junit(case("a", inner='<error type="x">boom</error>'),
+                                      case("b", inner="<failure>no</failure>"), case("c", time="4")),
+                                "tThing.a: error", "tThing.b: failure", "tThing.c: took 4 s")
+        self.assertEqual(len(lines), 4)
+
+    def test_time_limit(self):
+        # the limit itself is a violation; tTiming is exempt, and only that class
+        rc, out = self.run_junit(junit(case("a", time="3.999"), case("b", time="60", classname="tTiming")))
+        self.assertEqual(rc, 0, out)
+        self.violations(junit(case("a"), case("b", time="4.0", classname="tTimingOther")), "tTimingOther.b: took 4 s")
+        # a time that cannot be compared proves nothing
+        for t in ("", "fast", "nan", "inf"):
+            self.violations(junit(case("a"), case("b", time=t)), "tThing.b: time")
+        self.violations(junit(case("a"), '<testcase classname="tThing" name="b"/>'), "tThing.b: time")
+
+    def test_skipped_allowance(self):
+        doc = junit(case("a"), case("b", inner="<skipped/>"), case("c", inner="<skipped/>"))
+        rc, out = self.run_junit(doc, "--min-tests", "2", "--max-seconds", "4", "--max-skipped", "2")
+        self.assertEqual((rc, out), (0, "check_junit: 3 tests, 0 violation(s)\n"))
+        self.violations(doc, "2 skipped, more than the 1 allowed",
+                        limits=("--min-tests", "2", "--max-seconds", "4", "--max-skipped", "1"))
+
+    def test_single_testsuite_root(self):
+        doc = '<testsuite name="tThing">%s%s</testsuite>' % (case("a"), case("b"))
+        rc, out = self.run_junit(doc)
+        self.assertEqual((rc, out), (0, "check_junit: 2 tests, 0 violation(s)\n"))
+
+    def test_unusable_input_and_usage(self):
+        for text in ("", "<testsuites><testsuite>", "not xml"):
+            rc, out = self.run_junit(text)
+            self.assertEqual(rc, 2, out)
+            self.assertTrue(out.startswith("check_junit: "), out)
+            self.assertNotIn("violation(s)", out)
+        # every limit is required: a check without a minimum would pass an empty run
+        rc, out = self.run_junit(junit(case("a"), case("b")), "--max-seconds", "4", "--max-skipped", "0")
+        self.assertEqual(rc, 2, out)
 
 
 class CheckMlint(unittest.TestCase):

@@ -154,6 +154,14 @@ jobs:
           strict: true
           startup-options: -logfile test-results/matlab.log
 
+      # A green test step says only that no test failed. This also fails the job when tests
+      # did not run (fewer than the minimum), were skipped, or took 4 s or more (tTiming is
+      # exempt). The minimum is the count of the last green run rounded down to a multiple
+      # of 10; raise it when the suite grows.
+      - name: Check the MATLAB test results (count, skipped, duration)
+        if: always()
+        run: python3 matlab/tools/check_junit.py test-results/matlab.xml --min-tests 210 --max-seconds 4 --max-skipped 0
+
       - name: Process exit with libiio loaded (run 1 of 10)
         uses: matlab-actions/run-command@v2
         with:
@@ -218,3 +226,17 @@ jobs:
         with:
           name: matlab-${{ matrix.release }}
           path: test-results/
+
+      # Written by tTiming; absent when that test did not run.
+      - name: Timing summary
+        if: always()
+        run: |
+          if [ -f test-results/timing.txt ]; then
+            {
+              echo '### MATLAB fast path timing (${{ matrix.release }})'
+              echo
+              echo '```'
+              cat test-results/timing.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
