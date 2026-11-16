@@ -13,11 +13,6 @@
 #include <time.h>
 
 #define CLOSE_DRAIN_MS 1000.0   /* longest wait of a close when the context timeout is infinite */
-/* Most blocks of one stream. The stream layer creates every block before the open returns, in
- * one MEX call that nothing can interrupt: without a limit a mistyped count hangs MATLAB and
- * takes its memory. */
-#define MAX_NB_BLOCKS 4096
-
 /* Gateway-side state of a stream (the aux of its handle entry; malloc, freed by the destroy op). */
 struct cs_aux {
 	const struct iio_context *ctx;   /* alive as long as the entry: the stream is destroyed first */
@@ -266,8 +261,8 @@ static int conv_stream_open(struct gw_call *c)
 		return gw_fail(c, -EINVAL, "option 'samples' must be a positive integer");
 	if (!samples)
 		return gw_fail(c, -EINVAL, "option 'samples' is required");
-	if (dp_opt_int(opts, "nb_blocks", 1, MAX_NB_BLOCKS, 2, &nb_blocks))
-		return gw_fail(c, -EINVAL, "option 'nb_blocks' must be an integer from 1 to %d", MAX_NB_BLOCKS);
+	if (dp_opt_int(opts, "nb_blocks", 1, DP_MAX_NB_BLOCKS, 2, &nb_blocks))
+		return gw_fail(c, -EINVAL, "option 'nb_blocks' must be an integer from 1 to %d", DP_MAX_NB_BLOCKS);
 	if (dp_opt_int(opts, "buffer", -1, UINT_MAX, -1, &buffer))
 		return gw_fail(c, -EINVAL, "option 'buffer' must be a buffer position (from 0) or -1");
 	if (dp_opt_int(opts, "timeout_ms", -1, INT_MAX, -1, &timeout_ms))

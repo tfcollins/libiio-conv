@@ -102,7 +102,7 @@ iio_block_foreach_sample	-	-	not_exposed	C callback (and it miscounts samples wh
 iio_block_enqueue	block_enqueue	iio.Block.enqueue	exposed	
 iio_block_dequeue	block_dequeue	iio.Block.dequeue	exposed	not ready with nonblock gives false, not an error; iio:EPERM from libiio clears the gateway flag "enqueued"
 iio_block_get_buffer_stream	block_get_buffer_stream	iio.Block.buffer_stream	exposed	
-iio_buffer_create_stream	buffer_create_stream	iio.Stream, iio.Buffer.create_stream	exposed	
+iio_buffer_create_stream	buffer_create_stream	iio.Stream, iio.Buffer.create_stream	exposed	at most 4096 blocks (checked by the gateway: libiio creates every block inside the one call)
 iio_stream_cancel	stream_cancel	iio.Stream.cancel	exposed	
 iio_stream_destroy	stream_destroy	iio.Stream.destroy, iio.Stream.delete	exposed	
 iio_stream_get_next_block	stream_get_next_block	iio.Stream.next	exposed	the error-encoded result is checked: a failed next raises (iio:ETIMEDOUT ...) and registers nothing

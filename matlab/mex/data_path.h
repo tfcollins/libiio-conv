@@ -19,6 +19,12 @@
                                for a stream's blocks: set on every block except the one returned last */
 #define BLK_CPU_OFF    2u   /* set / cleared by a successful block_disable_cpu_access */
 
+/* The most blocks of one stream (buffer_create_stream and conv_stream_open). libiio creates
+ * every block before the call returns, in one MEX call that nothing can interrupt, and
+ * destroying an output stream dequeues each one: without a limit a mistyped count hangs
+ * MATLAB and takes its memory. */
+#define DP_MAX_NB_BLOCKS 4096
+
 /* ------------------------------------------------------------------ devices */
 
 /* Device of a device, channel, buffer, mask, buffer stream, block, stream, event stream or conv
@@ -328,7 +334,8 @@ static inline int dp_opt_check(const mxArray *opts, const char *const *allowed, 
 
 /* A real, full scalar of one of the ten numeric classes (not logical, not char), as a double:
  * NaN, Inf and fractions included, and an int64 / uint64 rounded to a double. For a value that
- * is a double in C too (a frequency, a gain); for a count or an index use dp_opt_int(). */
+ * is a double in C too (a frequency, a gain); for a count or an index use dp_opt_int().
+ * No command has such an option yet: kept, and tested, for the first one that does. */
 static inline int dp_opt_number(const mxArray *opts, const char *field, double dflt, double *out)
 {
 	const mxArray *f;

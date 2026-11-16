@@ -93,6 +93,9 @@ static void test_emu_rx(const struct mt_fixture *fx)
 	CHECK(mt_raises("iio:EINVAL", "buffer_create_stream", 4, mt_u64(rxb), mt_dbl(3), mt_dbl(16), mt_u64(mtx)));
 	CHECK(mt_raises("iio:EINVAL", "buffer_create_stream", 4, mt_u64(txb), mt_dbl(3), mt_dbl(16), mt_u64(m)));
 	CHECK(mt_raises("iio:EINVAL", "buffer_create_stream", 4, mt_u64(rxb), mt_dbl(2.5), mt_dbl(16), mt_u64(m)));
+	/* every block is created inside the one call: the count has the limit of the fast path */
+	CHECK(mt_raises("iio:EINVAL", "buffer_create_stream", 4, mt_u64(rxb), mt_dbl(DP_MAX_NB_BLOCKS + 1), mt_dbl(16), mt_u64(m)));
+	CHECK(mt_raises("iio:EINVAL", "buffer_create_stream", 4, mt_u64(rxb), mt_dbl(1e8), mt_dbl(16), mt_u64(m)));
 	CHECK(mt_raises("iio:EINVAL", "buffer_create_stream", 4, mt_u64(rxb), mt_dbl(3), mt_dbl(-1), mt_u64(m)));
 	CHECK(mt_raises("iio:EINVAL", "buffer_create_stream", 4, mt_u64(rxb), mt_dbl(NAN), mt_dbl(16), mt_u64(m)));
 	CHECK(mt_raises("iio:EINVAL", "buffer_create_stream", 4, mt_u64(rxb), mt_dbl(3), mt_dbl(INFINITY), mt_u64(m)));

@@ -143,6 +143,7 @@ classdef tStream < IioTestCase
             tc.verifyError(@() iio.Stream(buf, mask, 0, 3), 'iio:EINVAL');
             tc.verifyError(@() iio.Stream(buf, mask, 16, 2.5), 'iio:EINVAL');
             tc.verifyError(@() iio.Stream(buf, mask, 16, NaN), 'iio:EINVAL');
+            tc.verifyError(@() iio.Stream(buf, mask, 16, 4097), 'iio:EINVAL');    % the limit of the gateway
             tc.verifyError(@() iio.Stream(buf, mask), 'iio:EINVAL');
             tc.verifyError(@() iio.Stream(buf, mask, [16 16]), 'iio:EINVAL');
             tc.verifyError(@() iio.Stream(mask, mask, 16), 'iio:EINVAL');

@@ -3,7 +3,8 @@ classdef Stream < iio.internal.Object
     %   ST = iio.Stream(BUF, MASK, SAMPLES_COUNT) opens the iio.Buffer BUF with the
     %   channels of the iio.ChannelsMask MASK and creates 4 blocks of SAMPLES_COUNT
     %   samples each. ST = iio.Stream(BUF, MASK, SAMPLES_COUNT, NB_BLOCKS) creates
-    %   NB_BLOCKS blocks. BUF.create_stream(MASK, SAMPLES_COUNT, NB_BLOCKS) is the same.
+    %   NB_BLOCKS blocks (1 to 4096). BUF.create_stream(MASK, SAMPLES_COUNT, NB_BLOCKS)
+    %   is the same.
     %   MASK is copied: changing or destroying it afterwards has no effect on ST.
     %
     %   BLK = ST.next() returns the next iio.Block. The block belongs to the stream:

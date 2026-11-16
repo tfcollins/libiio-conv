@@ -66,7 +66,7 @@ static int buffer_create_stream(struct gw_call *c)
 	ret = gw_arg_handle(c, 0, GW_T_BUFFER, &buf, &buf_id);
 	if (ret)
 		return ret;
-	ret = gw_arg_int(c, 1, 1, (long long)((SIZE_MAX - sizeof(*aux)) / sizeof(aux->views[0]) / 2), &nb_blocks);
+	ret = gw_arg_int(c, 1, 1, DP_MAX_NB_BLOCKS, &nb_blocks);
 	if (ret)
 		return ret;
 	ret = gw_arg_int(c, 2, 1, LLONG_MAX, &samples);

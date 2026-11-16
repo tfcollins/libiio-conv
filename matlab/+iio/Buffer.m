@@ -79,7 +79,7 @@ classdef Buffer < iio.internal.Object
             %CREATE_STREAM An iio.Stream on this buffer with the channels of MASK enabled.
             %   ST = CREATE_STREAM(MASK, SAMPLES_COUNT) uses 4 blocks of SAMPLES_COUNT
             %   samples each; ST = CREATE_STREAM(MASK, SAMPLES_COUNT, NB_BLOCKS) uses
-            %   NB_BLOCKS blocks.
+            %   NB_BLOCKS blocks (1 to 4096).
             arguments
                 obj (1,1) {mustBeA(obj, "iio.Buffer")}
                 mask (1,1) {mustBeA(mask, "iio.ChannelsMask")}
