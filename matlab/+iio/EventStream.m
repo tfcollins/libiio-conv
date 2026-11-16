@@ -21,6 +21,9 @@ classdef EventStream < iio.internal.Object
     %   EV = iio.EventStream.decode(ID, DEV) gives the same struct, without timestamp,
     %   for the event code ID seen on the device DEV.
     %
+    %   Keep event streams and devices in separate arrays: [ES DEV], or STREAMS(2) = DEV,
+    %   is iio.EventStream(DEV) to MATLAB and opens another event stream.
+    %
     %   See also iio.Device, iio.Channel.
 
     properties (Dependent)

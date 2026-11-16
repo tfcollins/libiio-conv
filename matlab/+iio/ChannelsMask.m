@@ -17,6 +17,9 @@ classdef ChannelsMask < iio.internal.Object
     %   The mask is released by destroy, when the object is deleted, or with its
     %   context. A ChannelsMask keeps its device, and with it the context, alive.
     %
+    %   Keep masks and devices in separate arrays: [MASK DEV], or MASKS(2) = DEV, is
+    %   iio.ChannelsMask(DEV) to MATLAB and creates a second, empty mask.
+    %
     %   See also iio.Channel, iio.Device, iio.Buffer, iio.BufferStream.
 
     properties (Dependent)
