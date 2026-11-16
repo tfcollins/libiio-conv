@@ -83,6 +83,9 @@ classdef tExamples < IioTestCase
             % find_attr finds nothing, and write refuses the empty attribute
             tc.verifyValidationError(@() attributes(Uri = tc.Fx.Uri, Phy = "emu-phy", ...
                 Set = "nope", Value = 1));
+            % Set without Value: refused before the context is opened
+            tc.verifyError(@() attributes(Uri = tc.Fx.Uri, Phy = "emu-phy", Set = "text"), ...
+                'attributes:noValue');
         end
 
         function lowLevelBlocks(tc)
@@ -115,6 +118,17 @@ classdef tExamples < IioTestCase
             tc.verifyClass(t.uri, 'string');
             tc.verifyClass(t.description, 'string');
             tc.verifySize(t.uri, [0 1]);
+        end
+
+        function listContextsDefault(tc)
+            % the local backend: how many rows depends on the machine, the form does not
+            t = list_contexts();
+            tc.verifyClass(t, 'table');
+            tc.verifySize(t, [size(t, 1) 2]);
+            tc.verifyEqual(t.Properties.VariableNames, {'uri', 'description'});
+            tc.verifyClass(t.uri, 'string');
+            tc.verifyClass(t.description, 'string');
+            tc.verifyTrue(all(startsWith(t.uri, "local:")));
         end
     end
 end

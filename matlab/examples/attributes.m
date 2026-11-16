@@ -6,7 +6,8 @@ function t = attributes(opts)
 %   cannot be read has the value <missing>. One value: t{'ensm_mode', 'value'}.
 %
 %   T = ATTRIBUTES(Set = NAME, Value = V) first writes V (text, a number or a
-%   logical) to the attribute NAME. Uri and Phy select another context and device.
+%   logical) to the attribute NAME; Value is required with Set. Uri and Phy select
+%   another context and device.
 %   On the emulated context of the tests (matlab/tests/EmuFixture.m):
 %       t = attributes(Uri = fx.Uri, Phy = "emu-phy", Set = "text", Value = "abc");
 %
@@ -16,6 +17,9 @@ arguments
     opts.Phy (1,1) string = "ad9361-phy"
     opts.Set (1,1) string = ""
     opts.Value = []
+end
+if opts.Set ~= "" && isnumeric(opts.Value) && isempty(opts.Value)
+    error('attributes:noValue', 'Set = "%s" needs Value.', opts.Set);
 end
 ctx = iio.Context(opts.Uri);
 dev = ctx.find_device(opts.Phy);

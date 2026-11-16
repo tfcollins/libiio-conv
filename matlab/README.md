@@ -12,7 +12,8 @@ not been run on hardware yet; see [Limitations](#limitations).
 ## Requirements
 
 - Linux x86-64 (the MEX file is `iio_mex.mexa64`)
-- MATLAB R2023b or later; base MATLAB only, no toolbox
+- MATLAB R2023b or later (tested: R2023b and R2025b); base MATLAB only, no
+  toolbox
 - GCC, CMake 3.20 or later, Ninja, Python 3 (used at build time)
 - what `deps/build-libiio.sh` needs to build libiio: git, and the packages
   the CI job installs, `libxml2-dev libzstd-dev bison flex`
@@ -20,6 +21,10 @@ not been run on hardware yet; see [Limitations](#limitations).
 libiio v1 is not taken from the system. `deps/build-libiio.sh` builds the
 pinned commit into `deps/install`, and the MEX file is linked against that
 copy.
+
+The pinned libiio is built with the backends `local`, `ip`, `emu` and `xml`.
+It has no `usb:` and no `serial:` backend, and no DNS-SD, so a scan finds
+local contexts only: reach a device by its address (`ip:192.168.2.1`).
 
 ## Build
 
@@ -71,10 +76,12 @@ tx.write(tone);
 `matlab/examples` has five functions to start from, each with defaults for
 an ADALM-Pluto and a help text: `rx_capture`, `tx_cyclic`, `attributes`,
 `low_level_blocks` and `list_contexts` (`addpath('<repo>/matlab/examples')`).
+`list_contexts` scans the `local` backend unless told otherwise, the only
+one of this build that can scan.
 
 `help iio.RxStream`, `help iio.Attr` and so on give the reference of each
-class. Members are named as in libiio's Python binding (`find_device`,
-`read_longlong`); name-value options are written `LikeThis`.
+class. Members are named after the libiio C functions without their prefix
+(`find_device`, `read_longlong`); name-value options are written `LikeThis`.
 
 ## Object model and lifetime
 
@@ -104,11 +111,11 @@ Package functions: `iio.version`, `iio.backends`, `iio.has_backend`,
 - Destroying a context destroys everything obtained from it, streams first.
   An object that is used after that raises `iio:EBADF`; deleting it is
   silent. Nothing has to be released in a particular order.
-- Contexts, masks, buffer streams, blocks, `iio.Stream`, event streams and
-  the two fast-path streams are released by `delete` (or by going out of
-  scope) and by their `close` or `destroy` method; calling these twice is
-  harmless. Devices, channels, attributes and buffers belong to their context
-  and are not released one by one.
+- A context is released by `delete(ctx)` or by going out of scope. Masks,
+  blocks, `iio.Stream` and event streams are released the same way and also
+  have `destroy`; buffer streams and the two fast-path streams have `close`.
+  Calling these twice is harmless. Devices, channels, attributes and buffers
+  belong to their context and are not released one by one.
 - `iio.internal.handle_count()` is the number of libiio objects the MEX file
   holds; `iio.internal.shutdown()` destroys them all, streams before
   contexts, and leaves every iio object in the workspace invalid
@@ -199,7 +206,9 @@ valid = tx.write(data);      % 1 to SamplesPerFrame rows, C columns
 | `Buffer` | -1 | position of the buffer of the device, counted from 0. -1: the first buffer that has every channel |
 | `Cyclic` | `false` | transmit only: the first frame written repeats until the stream is closed; a second `write` is `iio:EBUSY` |
 
-The options are readable as properties of the stream afterwards.
+The options except `Buffer` are readable as properties of the stream
+afterwards (`OutputDataType` and `Scale` as `char`), together with `device`
+and `channels`.
 
 - **`valid`.** "No data in time" is not an error. `read` then returns
   `valid = false` and `data` all zero, and can be called again. `write`
@@ -527,7 +536,9 @@ to know:
 - `iio_context_set_data` and the other user-pointer functions, the raw block
   pointers and `iio_block_foreach_sample` have no counterpart (see the class
   reference for what to use).
-- Not tested: the `local:`, `ip:`, `usb:` and `serial:` backends and real
+- Not built: the `usb:` and `serial:` backends and network scanning (DNS-SD);
+  see `deps/build-libiio.sh`.
+- Not tested: the `local:` and `ip:` backends and real
   hardware; DMABUF success paths and a successful `disable_cpu_access`; a
   block queued after `cancel` on a backend that uses libiio's enqueue worker;
   `cancel` from another thread; a dequeue that timed out on libiio's generic
@@ -539,7 +550,11 @@ to know:
 
 ## Testing
 
-Five gates. The first four need no MATLAB licence and run with
+Five gates. The first four need no MATLAB licence. G1 and G4 run in every
+build; G2 and G3 need a MATLAB installation and the build above with
+`IIO_CONV_BUILD_MATLAB=ON` (G3 for R2023b as well when
+`/usr/local/MATLAB/R2023b` exists, `-DIIO_MLINT_MIN_ROOT=<root>` names
+another place). They run with
 
     ctest --test-dir build -L mex --output-on-failure
 
@@ -553,6 +568,8 @@ Five gates. The first four need no MATLAB licence and run with
 
 G1 needs one installed locale with a decimal comma (for example
 `sudo locale-gen de_DE.UTF-8`); without one its tests fail, they do not skip.
+`IIO_TEST_NO_COMMA_LOCALE=1` in the environment leaves the numeric-locale
+checks out instead.
 
 The MATLAB suite needs a MEX file built with the tests enabled
 (`IIO_CONV_BUILD_TESTS=ON`, the default): part of it runs on the scripted

@@ -1,7 +1,8 @@
 classdef Context < iio.internal.Object
     %CONTEXT An IIO context: one connection to a set of IIO devices.
     %   CTX = iio.Context(URI) creates the context that URI names, for example
-    %   "ip:192.168.2.1", "usb:1.2.3", "local:" or "emu:/path/to/file.xml".
+    %   "ip:192.168.2.1", "local:" or "emu:/path/to/file.xml" ("usb:1.2.3" with a
+    %   libiio that has the USB backend; the one of deps/build-libiio.sh has not).
     %   CTX = iio.Context() lets libiio choose: the URI in the environment variable
     %   IIOD_REMOTE if it is set, else "local:".
     %

@@ -5,8 +5,9 @@
 Fast conversion between IIO buffer samples and host arrays (type change, I/Q
 pairing, layout, scaling) for libiio v1, with SIMD kernels chosen at run time.
 
-Measured gain over converting sample by sample with libiio is 13x to 167x for
-12-bit-in-16 data on x86-64, depending on the case and block size; see
+Measured gain over converting sample by sample with libiio is 13x to 167x
+with the SIMD backends (4x to 18x with the scalar backend) for 12-bit-in-16
+data on x86-64, depending on the case and block size; see
 `docs/benchmarks.md`. The design is in
 `docs/superpowers/specs/`.
 
@@ -22,6 +23,13 @@ have not been run on hardware yet.
     cmake -S . -B build -G Ninja
     cmake --build build
     ctest --test-dir build --output-on-failure
+
+Needs GCC, CMake 3.20 or later, Ninja, Python 3 (at configure and build
+time, for the tests of the MATLAB gateway) and, for `ctest`, one installed
+locale with a decimal comma (`sudo locale-gen de_DE.UTF-8`);
+`IIO_TEST_NO_COMMA_LOCALE=1` in the environment leaves the numeric-locale
+checks out instead. `deps/build-libiio.sh` needs git and the packages
+`libxml2-dev libzstd-dev bison flex`.
 
 ## Backends
 
