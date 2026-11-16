@@ -483,6 +483,15 @@ static void test_rx_errors(void)
 	CHECK(open_raises("iio:EINVAL", rx, iq0(), opts(3, RX(8), "buffer", mt_dbl(-2))));
 	CHECK(open_raises("iio:EINVAL", rx, iq0(), opts(3, RX(8), "timeout_ms", mt_dbl(-2))));
 	CHECK(open_raises("iio:EINVAL", rx, iq0(), opts(3, RX(8), "nb_blocks", mt_dbl(4294967296.0))));
+	/* every block is created inside the open, which nothing can interrupt: at most 4096 */
+	CHECK(open_raises("iio:EINVAL", rx, iq0(), opts(3, RX(8), "nb_blocks", mt_dbl(4097))));
+	CHECK(strstr(mock_err_msg(), "nb_blocks") != NULL && strstr(mock_err_msg(), "4096") != NULL);
+	{
+		uint64_t big = open_cs(rx, iq0(), opts(3, RX(1), "nb_blocks", mt_dbl(4096)));
+
+		CHECK(big != 0);
+		close_cs(big);
+	}
 	CHECK(open_raises("iio:EINVAL", rx, iq0(), opts(3, RX(8), "timeout_ms", mt_dbl(2147483648.0))));
 	CHECK(open_raises("iio:EINVAL", rx, iq0(), opts(3, RX(8), "buffer", mt_dbl(4294967296.0))));
 	CHECK(open_raises("iio:EINVAL", rx, iq0(), opts(2, "output", mt_bool(false),
