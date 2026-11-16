@@ -190,3 +190,36 @@ workflow once this is approved.
   The C library is tested there too, on x86-64 and on AArch64 runners (NEON).
 - NEON has been verified on a Cortex-A72; see `docs/benchmarks.md`.
 - `iio_conv_read` takes the host array's row count, not a byte count (review fix).
+
+## Changes after the MATLAB bindings landed (2026-11-16)
+
+What differs from the Part 2 text above; `matlab/README.md` is the reference for the bindings.
+
+- A stream layer was added to the C library (`include/iio/iio-conv-stream.h`): whole frames
+  between a buffer and a host array in one call, built on explicit blocks, with a timeout
+  policy and cyclic transmit. The MATLAB fast path sits on it.
+- The data path in MATLAB is `iio.RxStream` / `iio.TxStream` (fast path) and
+  `iio.Block.read` / `iio.Block.write` (explicit blocks), not `Buffer.read` / `Stream.read`.
+  Options are `OutputDataType`, `Complex`, `Scale`, `Gain`, `Offset` and `Raw`. Transmit is the
+  exact inverse of receive: the device gets `(DATA - Offset) / Gain`.
+- Context scan is the function `iio.scan_contexts`, not a `Scan` class; events are returned as
+  structs by `iio.EventStream.read`, not as `Event` objects.
+- The pinned `iio.h` has 141 public functions, not 133: 124 are exposed, 12 are deliberately
+  not exposed and 5 are internal to the gateway. `matlab/api-map.tsv` lists every one and a
+  gate checks the map against the header, the gateway's command table and the M classes.
+- No code generation yet: there is no `coder.ExternalDependency` class. MATLAB Coder is not
+  licensed on the hosted runners, so it could not be tested.
+- The MEX uses string-command dispatch as planned. It does not call `mexLock` for the whole
+  session: it is locked only while a handle is alive, so `clear mex` works once every object
+  is gone.
+- Minimum release is R2023b; R2023b and R2025b are tested in CI. Only Linux x86-64 is built
+  and tested for the MEX.
+- The pinned libiio is built with the local, network, xml and emu backends only (no usb, no
+  serial, no DNS-SD scan).
+- Verification is by five gates: mock MATLAB runtime tests under sanitizers, the real MEX's
+  exports and load check, the linter of both releases, the API map check, and the
+  `matlab.unittest` suite in real MATLAB in CI (238 tests). There is no hardware test and no
+  comparison against pyadi-iio yet; all data tests use libiio's emulated backend.
+- Measured in CI on the emulated backend, the fast path is 8 to 10 times faster than the M-code
+  conversion for complex int16 and 13 to 17 times for complex double; see
+  `docs/benchmarks.md` for what those numbers include.
