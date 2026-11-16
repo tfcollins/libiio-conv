@@ -12,7 +12,9 @@ Measured gain over converting sample by sample with libiio is 13x to 167x for
 
 Status: the C library is complete. All backends are tested: SSE4.1, AVX2 and
 AVX-512 on x86-64, and NEON on a Cortex-A72 (static cross build, see below).
-MATLAB bindings are the next part of the project.
+The MATLAB bindings for libiio v1 in `matlab/` are complete for Linux x86-64
+and tested in MATLAB R2025b and R2023b on libiio's emulation backend; they
+have not been run on hardware yet.
 
 ## Build
 
@@ -160,6 +162,35 @@ libiio use its own blocks and worker thread, which fills and sends blocks
 strictly in the order they were queued and forgets a block whose transfer
 failed: frames must arrive whole and in order, and a lost transmit frame
 must be reported. The stream layer has not been run on hardware yet.
+
+## MATLAB bindings
+
+`matlab/` holds bindings for libiio v1: one MEX file and the package `iio`,
+whose handle classes reach the public functions of `iio.h`. `iio.RxStream`
+and `iio.TxStream` sit on the stream layer above and move one frame per call
+straight into and out of a MATLAB array.
+
+    deps/build-libiio.sh
+    cmake -S . -B build -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DMatlab_ROOT_DIR=<MATLAB root>
+    cmake --build build
+
+```matlab
+addpath('<repo>/matlab')
+ctx = iio.Context("ip:192.168.2.1");
+dev = ctx.find_device("cf-ad9361-lpc");
+rx = iio.RxStream(dev, ["voltage0" "voltage1"], SamplesPerFrame = 16384, ...
+    OutputDataType = "single", Complex = true, Scale = "fullscale");
+[iq, valid] = rx.read();      % 16384-by-1 complex single, -1 to 1
+if ~valid
+    disp('no frame in time')  % not an error: iq is all zero, read again
+end
+rx.close();
+```
+
+`matlab/README.md` has the object model, every option, the class reference
+and the mapping from libiio v0. Limitations: Linux x86-64 and MATLAB R2023b
+or later only, no code generation yet, a blocking call cannot be interrupted
+with Ctrl-C, and nothing has been run on hardware.
 
 ## Host array
 
