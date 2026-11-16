@@ -865,6 +865,133 @@ static void context_first(void)
 	mt_ok("block_destroy", 1, mt_u64(sblk));
 }
 
+/* tLifetime and tStrings: what the gateway answers to the calls of those two test classes */
+static void lifetime_and_strings(void)
+{
+	uint64_t ctx, phy, rx, tx, text, mask, bs, blk, cs;
+	mxArray *a, *cell;
+	size_t n;
+
+	ctx = mt_u64_of("create_context", 2, mt_empty(), mt_str(fx.uri));
+	phy = find_dev(ctx, "emu-phy");
+	rx = find_dev(ctx, "emu-rx");
+	tx = find_dev(ctx, "emu-tx");
+	text = mt_u64_of("device_find_attr", 2, mt_u64(phy), mt_str("text"));
+
+	/* tStrings.emptyAndNonAscii: "" and char(181) name no device (iio:device4 has no name) */
+	CHECK(mt_u64_of("context_find_device", 2, mt_u64(ctx), mt_str("")) == 0);
+	a = mt_str("u");
+	((mxChar *)mxGetData(a))[0] = 181;
+	CHECK(mt_u64_of("context_find_device", 2, mt_u64(ctx), a) == 0);
+	a = mt_str("uV");
+	((mxChar *)mxGetData(a))[0] = 181;
+	CHECK(mt_u64_of("device_find_attr", 2, mt_u64(phy), a) == 0);
+	CHECK(mt_u64_of("device_find_channel", 3, mt_u64(phy), mt_str(""), mt_bool(false)) == 0);
+
+	/* tStrings.embeddedNul: refused, never cut at the NUL */
+	a = mt_str("emu-phy0x");
+	((mxChar *)mxGetData(a))[7] = 0;
+	CHECK(mt_raises("iio:EINVAL", "context_find_device", 2, mt_u64(ctx), a));
+	a = mt_str("calib_mode0");
+	((mxChar *)mxGetData(a))[10] = 0;
+	CHECK(mt_raises("iio:EINVAL", "device_find_attr", 2, mt_u64(phy), a));
+	a = mt_str("a0b");
+	((mxChar *)mxGetData(a))[1] = 0;
+	CHECK(mt_raises("iio:EINVAL", "attr_write_string", 2, mt_u64(text), a));
+	CHECK(!strcmp(mt_str_of("attr_read_raw", 1, mt_u64(text)), "hello world"));
+	cell = mxCreateCellMatrix(1, 2);
+	a = mt_str("voltage0_i0");
+	((mxChar *)mxGetData(a))[10] = 0;
+	mxSetCell(cell, 0, a);
+	mxSetCell(cell, 1, mt_str("voltage0_q"));
+	n = gw_handle_count();
+	CHECK(mt_raises("iio:EINVAL", "conv_stream_open", 3, mt_u64(rx), cell, rx_opts(8, 2, "double", false, -1)));
+	CHECK(gw_handle_count() == n);
+
+	/* tStrings.charAndStringAgree: the text an attribute was given is the text it has, the
+	 * empty text included; two contexts of one file have the same XML */
+	CHECK(mt_dbl_of("attr_write_string", 2, mt_u64(text), mt_str("abc")) == 4);
+	CHECK(!strcmp(mt_str_of("attr_read_raw", 1, mt_u64(text)), "abc"));
+	CHECK(mt_dbl_of("attr_write_string", 2, mt_u64(text), mt_str("x y")) == 4);
+	CHECK(!strcmp(mt_str_of("attr_read_raw", 1, mt_u64(text)), "x y"));
+	CHECK(mt_dbl_of("attr_write_string", 2, mt_u64(text), mt_str("")) == 1);
+	CHECK(mt_str_of("attr_read_raw", 1, mt_u64(text)) && !strcmp(mt_str_of("attr_read_raw", 1, mt_u64(text)), ""));
+	{
+		uint64_t other = mt_u64_of("create_context", 2, mt_empty(), mt_str(fx.uri));
+		char *xml = strdup(mt_str_of("context_get_xml", 1, mt_u64(ctx)));
+
+		CHECK(xml && strlen(xml) > 9000 && !strcmp(xml, mt_str_of("context_get_xml", 1, mt_u64(other))));
+		free(xml);
+		mt_ok("context_destroy", 1, mt_u64(other));
+	}
+
+	/* tStrings.emptyAndNonAscii: char([181 86]) is written as UTF-8 and read back as the same
+	 * two characters; the bytes carry the NUL that ends every attribute value */
+	a = mt_str("uV");
+	((mxChar *)mxGetData(a))[0] = 181;
+	CHECK(mt_dbl_of("attr_write_string", 2, mt_u64(text), a) == 4);
+	{
+		static const uint8_t utf8[4] = { 0xC2, 0xB5, 'V', 0 };
+		mxArray *out[1] = { NULL };
+
+		CHECK(mt_call(1, out, "attr_read_raw", 1, mt_u64(text)) == 0);
+		CHECK(mxIsChar(out[0]) && mxGetM(out[0]) == 1 && mxGetN(out[0]) == 2);
+		CHECK(((const mxChar *)mxGetData(out[0]))[0] == 181 && ((const mxChar *)mxGetData(out[0]))[1] == 'V');
+		mxDestroyArray(out[0]);
+		CHECK(mt_call(1, out, "attr_read_raw", 2, mt_u64(text), mt_bool(true)) == 0);
+		CHECK(mxGetClassID(out[0]) == mxUINT8_CLASS && mxGetM(out[0]) == 1 && mxGetN(out[0]) == 4);
+		CHECK(mxGetNumberOfElements(out[0]) == 4 && !memcmp(mxGetData(out[0]), utf8, 4));
+		mxDestroyArray(out[0]);
+	}
+	CHECK(mt_u64_of("device_find_attr", 2, mt_u64(phy), mt_str("")) == 0);
+	CHECK(mt_u64_of("device_find_debug_attr", 2, mt_u64(phy), mt_str("")) == 0);
+	/* bytes with a zero go through attr_write_raw */
+	CHECK(mt_dbl_of("attr_write_raw", 2, mt_u64(text), mt_bytes("a\0b", 3)) == 3);
+
+	/* tLifetime.constructorFailureLeavesNoHandle: an unknown channel, then a failure of the
+	 * open itself (Gain = 0), which comes after the buffer was chosen */
+	cell = mxCreateCellMatrix(1, 1);
+	mxSetCell(cell, 0, mt_str("nope"));
+	n = gw_handle_count();
+	CHECK(mt_raises("iio:ENOENT", "conv_stream_open", 3, mt_u64(rx), cell, rx_opts(16, 2, "double", false, -1)));
+	CHECK(gw_handle_count() == n);          /* tStrings.missingString: no buffer was chosen yet */
+	for (int i = 0; i < 50; i++) {
+		cell = mxCreateCellMatrix(1, 1);
+		mxSetCell(cell, 0, mt_str("nope"));
+		CHECK(mt_raises("iio:ENOENT", "conv_stream_open", 3, mt_u64(rx), cell, rx_opts(16, 2, "double", false, -1)));
+	}
+	CHECK(gw_handle_count() == n);
+	for (int i = 0; i < 51; i++) {
+		CHECK(mt_raises("iio:EINVAL", "conv_stream_open", 3, mt_u64(rx), iq0(), opts(11,
+			"output", mt_bool(false), "buffer", mt_dbl(-1), "samples", mt_dbl(16), "nb_blocks", mt_dbl(2),
+			"class", mt_str("double"), "complex", mt_bool(false), "scale", mt_str("none"),
+			"raw", mt_bool(false), "gain", mt_dbl(0), "offset", none(), "timeout_ms", mt_dbl(-1))));
+		if (i == 0)
+			n = gw_handle_count();
+	}
+	CHECK(gw_handle_count() == n);
+
+	/* tLifetime.childAfterContextDelete and scopeExitAnyOrder: the context goes first, the
+	 * objects of the test method are deleted afterwards */
+	mask = mt_u64_of("create_channels_mask", 1, mt_u64(tx));
+	mt_ok("channel_enable", 2, mt_u64(find_chn(tx, "voltage0_i", true)), mt_u64(mask));
+	mt_ok("channel_enable", 2, mt_u64(find_chn(tx, "voltage0_q", true)), mt_u64(mask));
+	bs = mt_u64_of("buffer_open", 2, mt_u64(buf0(tx)), mt_u64(mask));
+	blk = mt_u64_of("buffer_stream_create_block", 2, mt_u64(bs), mt_dbl(16));
+	cs = mt_u64_of("conv_stream_open", 3, mt_u64(rx), iq0(), rx_opts(16, 2, "int16", true, -1));
+	CHECK(mask && bs && blk && cs);
+	mt_ok("context_destroy", 1, mt_u64(ctx));
+	CHECK(mt_dbl_of("mex_handle_count", 0) == 0);
+	CHECK(mt_raises("iio:EBADF", "attr_read_raw", 1, mt_u64(text)));
+	CHECK(mt_raises("iio:EBADF", "conv_stream_read", 1, mt_u64(cs)));
+	mt_ok("block_destroy", 1, mt_u64(blk));
+	mt_ok("buffer_close", 1, mt_u64(bs));
+	mt_ok("channels_mask_destroy", 1, mt_u64(mask));
+	mt_ok("conv_stream_close", 1, mt_u64(cs));
+	mt_ok("context_destroy", 1, mt_u64(ctx));
+	CHECK(mt_dbl_of("mex_handle_count", 0) == 0);
+}
+
 int main(int argc, char **argv)
 {
 	uint64_t ctx;
@@ -887,6 +1014,7 @@ int main(int argc, char **argv)
 	mt_ok("context_destroy", 1, mt_u64(ctx));
 	CHECK(gw_handle_count() == 0);
 	context_first();
+	lifetime_and_strings();
 
 	mt_fixture_teardown(&fx);
 	MT_MAIN_RETURN();

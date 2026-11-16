@@ -51,6 +51,12 @@ if(IIO_CONV_BUILD_MATLAB)
 		set_tests_properties(mex_bundled_libs PROPERTIES ENVIRONMENT "LD_LIBRARY_PATH=${Matlab_ROOT_DIR}/bin/glnxa64")
 		list(APPEND names mex_bundled_libs)
 	endif()
+	if(TARGET test_integration)
+		# The same for every command group: stale ids, random arguments, allocation failures.
+		add_test(NAME mex_bundled_libs_integration COMMAND test_integration ${IIO_FIXTURE_XML})
+		set_tests_properties(mex_bundled_libs_integration PROPERTIES ENVIRONMENT "LD_LIBRARY_PATH=${Matlab_ROOT_DIR}/bin/glnxa64")
+		list(APPEND names mex_bundled_libs_integration)
+	endif()
 endif()
 set_tests_properties(${names} PROPERTIES LABELS mex TIMEOUT 30)
 # The dispatcher's own frame on the real stack, which the mock fills with 0xA5 before every

@@ -16,7 +16,7 @@ option(IIO_CONV_BUILD_TESTS "Build tests" ON)
 option(IIO_CONV_BUILD_BENCH "Build benchmarks" OFF)
 option(IIO_CONV_BUILD_MATLAB "Build matlab/iio_mex.mexa64 (needs -DMatlab_ROOT_DIR=<MATLAB root>)" OFF)
 option(IIO_CONV_MEX_SANITIZE "ASan and UBSan for the gateway's mock-based tests" ON)
-option(IIO_CONV_API_STRICT "check_api.py: every command of matlab/api-map.tsv must exist" OFF)
+option(IIO_CONV_API_STRICT "check_api.py: every command of matlab/api-map.tsv must exist" ON)
 set(IIO_MEX_GROUPS toplevel context attr device channel buffer block stream event lowlevel conv)
 set(IIO_FIXTURE_XML ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/iio_fixture.xml)
 
