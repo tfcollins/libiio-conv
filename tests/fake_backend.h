@@ -27,6 +27,12 @@
  *   read_ev              two events, then -EBUSY if nonblock, else -ETIMEDOUT
  *   get_trigger          fake.trigger, or -ENODEV when it is NULL
  *   set_trigger          stores it
+ *   read_attr            writes "fake:<attribute name>", returns its length + 1
+ *                        (-ENOSPC when it does not fit)
+ *   write_attr           keeps a malloc copy of exactly len bytes in attr_data /
+ *                        attr_len (replacing the previous one), returns len
+ *   set_timeout          records the value in fake.timeout
+ *   ping                 returns 0
  *
  * iio_buffer_close() itself calls the cancel op, so closing a buffer stream
  * always logs "XC".
@@ -43,6 +49,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define FAKE_NO_TIMEOUT (-12345)
+
 struct fake_state {
 	char log[256];        /* one letter per backend call, in call order (above) */
 	int rx_frames;        /* input dequeues that deliver data before "not ready"; default 3 */
@@ -55,9 +63,13 @@ struct fake_state {
 	size_t tx_bytes;
 	bool tx_cyclic;
 	const struct iio_device *trigger;
+	int timeout;          /* last value the set_timeout operation received; default FAKE_NO_TIMEOUT */
+	/* malloc copy of the bytes write_attr received last; default NULL, 0 */
+	unsigned char *attr_data;
+	size_t attr_len;
 };
 
-static struct fake_state fake = { .rx_frames = 3, .tx_frames = 2 };
+static struct fake_state fake = { .rx_frames = 3, .tx_frames = 2, .timeout = FAKE_NO_TIMEOUT };
 
 struct iio_buffer_pdata {
 	bool output;
@@ -237,7 +249,49 @@ static int fake_set_trigger(const struct iio_device *dev, const struct iio_devic
 	return 0;
 }
 
+static ssize_t fake_read_attr(const struct iio_attr *attr, char *dst, size_t len)
+{
+	int n = snprintf(dst, len, "fake:%s", iio_attr_get_name(attr));
+
+	if (n < 0)
+		return -EIO;
+	return (size_t)n < len ? n + 1 : -ENOSPC;
+}
+
+static ssize_t fake_write_attr(const struct iio_attr *attr, const char *src, size_t len)
+{
+	/* malloc(0) may be NULL without an error */
+	unsigned char *copy = malloc(len ? len : 1);
+
+	(void)attr;
+	if (!copy)
+		return -ENOMEM;
+	if (len)
+		memcpy(copy, src, len);
+	free(fake.attr_data);
+	fake.attr_data = copy;
+	fake.attr_len = len;
+	return (ssize_t)len;
+}
+
+static int fake_set_timeout(struct iio_context *ctx, int timeout)
+{
+	(void)ctx;
+	fake.timeout = timeout;
+	return 0;
+}
+
+static int fake_ping(struct iio_context *ctx)
+{
+	(void)ctx;
+	return 0;
+}
+
 static const struct iio_backend_ops fake_ops = {
+	.read_attr = fake_read_attr,
+	.write_attr = fake_write_attr,
+	.set_timeout = fake_set_timeout,
+	.ping = fake_ping,
 	.get_trigger = fake_get_trigger,
 	.set_trigger = fake_set_trigger,
 	.open_buffer = fake_open_buffer,
@@ -261,12 +315,14 @@ static const struct iio_backend fake_backend = {
 	.default_timeout_ms = 1000,
 };
 
-/* Zero everything, then the defaults */
+/* Free attr_data, zero everything, then the defaults */
 static inline void fake_reset(void)
 {
+	free(fake.attr_data);
 	memset(&fake, 0, sizeof(fake));
 	fake.rx_frames = 3;
 	fake.tx_frames = 2;
+	fake.timeout = FAKE_NO_TIMEOUT;
 }
 
 static inline void fake_clear_log(void)
