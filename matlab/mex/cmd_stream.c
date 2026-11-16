@@ -142,8 +142,11 @@ static int stream_get_next_block(struct gw_call *c)
 	}
 	/* the stream's buffer stream, on first use (Block.read keeps its converters there) */
 	ret = gw_handle_borrow(GW_T_BUFFER_STREAM, iio_block_get_buffer_stream(blk), id, &bs_id);
-	if (!ret)
+	if (!ret) {
+		/* libiio started it in the first successful call: buffer_stream_is_started says so */
+		gw_handle_set_flags(bs_id, gw_handle_flags(bs_id) | BS_STARTED);
 		ret = gw_handle_borrow(GW_T_BLOCK, blk, id, &blk_id);
+	}
 	if (!ret) {
 		for (i = 0; i < aux->nb_views && aux->views[i] != blk_id; i++)
 			;

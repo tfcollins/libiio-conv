@@ -7,7 +7,8 @@ classdef BufferStream < iio.internal.Object
     %   BLK = create_block(NBYTES) creates an iio.Block of NBYTES bytes. start enables
     %   the buffer (at least one block must exist), stop disables it; both do nothing
     %   when the stream is already in that state. cancel makes a blocked dequeue
-    %   return; the stream stays started.
+    %   return; the stream stays started, but libiio has stopped moving its blocks:
+    %   call stop and then start before blocks are queued again.
     %
     %   mask is the set of channels the hardware really enabled, which may be more
     %   than was asked for; sample_size is the size of one sample of that set. The
@@ -21,7 +22,7 @@ classdef BufferStream < iio.internal.Object
 
     properties (Dependent)
         buffer        % iio.Buffer the stream was opened on
-        started       % logical: start was called, and stop was not
+        started       % logical: start was called, and stop was not (true for the buffer stream of an iio.Stream)
         mask          % read-only iio.ChannelsMask: the channels actually enabled
         sample_size   % double: bytes per sample of that mask
     end
@@ -101,6 +102,7 @@ classdef BufferStream < iio.internal.Object
 
         function cancel(obj)
             %CANCEL Make a blocked dequeue of this stream return. The stream stays started.
+            %   Before blocks are queued again, call stop and then start.
             arguments
                 obj (1,1) iio.BufferStream
             end

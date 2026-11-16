@@ -102,6 +102,7 @@ classdef tStream < IioTestCase
             bs = blk.buffer_stream;
             tc.verifyClass(bs, 'iio.BufferStream');
             tc.verifyEqual(bs.sample_size, 4);
+            tc.verifyEqual(bs.started, true);       % the stream started it with the first next()
             tc.verifyError(@() bs.start(), 'iio:EPERM');
         end
 

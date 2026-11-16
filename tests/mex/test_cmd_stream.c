@@ -150,6 +150,7 @@ static void test_emu_rx(const struct mt_fixture *fx)
 	bsv = blk ? gw_handle_find(GW_T_BUFFER_STREAM, iio_block_get_buffer_stream(blk)) : 0;
 	CHECK(bsv != 0);
 	CHECK(gw_handle_type(bsv) == GW_T_BUFFER_STREAM && !gw_handle_owned(bsv) && gw_handle_parent(bsv) == st);
+	CHECK(gw_handle_flags(bsv) & BS_STARTED);      /* libiio started it: buffer_stream_is_started is true */
 	/* a destroy command of the right type leaves a stream alone only if it IS a stream */
 	CHECK(mt_raises("iio:EBADF", "stream_destroy", 1, mt_u64(id[0])));
 	CHECK(mt_raises("iio:EBADF", "stream_get_next_block", 1, mt_u64(id[0])));
