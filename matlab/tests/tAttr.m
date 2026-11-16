@@ -104,6 +104,8 @@ classdef tAttr < IioTestCase
             tc.verifyEqual(text.read(), 'def');
             text.write(true);
             tc.verifyEqual(text.read(), '1');
+            text.write_bool(false);
+            tc.verifyEqual(text.read(), '0');
             text.write(17);
             tc.verifyEqual(text.read(), '17');
             text.write(int32(-5));

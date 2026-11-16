@@ -54,6 +54,9 @@ classdef Attr < iio.internal.Object
 
         function s = read(obj)
             %READ Value of the attribute as text (char row vector; '' when it is empty).
+            %   The value is read as UTF-8 text up to its first zero byte. A value that is
+            %   not UTF-8 text is not preserved (invalid bytes become char(65533)): read_raw
+            %   returns the bytes.
             arguments
                 obj (1,1) iio.Attr
             end
@@ -130,6 +133,8 @@ classdef Attr < iio.internal.Object
 
         function write_string(obj, s)
             %WRITE_STRING Write text.
+            %   Text that contains a zero character (char(0)) raises iio:EINVAL: binary data
+            %   is written with write_raw.
             arguments
                 obj (1,1) iio.Attr
                 s (1,1) string
@@ -162,6 +167,10 @@ classdef Attr < iio.internal.Object
             %   WRITE_DOUBLE(V) sends the shortest text in fixed notation that reads back as
             %   exactly V (0.1 as "0.1", 1e-9 as "0.000000001").
             %   WRITE_DOUBLE(V, Exact = false) sends V with six decimals, as libiio does.
+            %   With Exact = true every digit is sent, and the Linux kernel truncates what a
+            %   driver does not keep where six decimals would have been rounded: round a
+            %   computed value first, or use Exact = false. A value that needs more than 40
+            %   decimals is sent with an exponent, which kernel drivers refuse.
             %   NaN and Inf raise iio:EINVAL.
             arguments
                 obj (1,1) iio.Attr

@@ -67,6 +67,11 @@ classdef tContext < IioTestCase
             tc.verifyEqual(q.flags, 1);
             c = iio.Context(tc.Fx.Uri, Timeout = Inf);
             tc.verifyEqual(c.params.timeout_ms, -1);
+            d = iio.Context(tc.Fx.Uri, StderrLevel = "debug", TimestampLevel = "error");
+            r = d.params;
+            tc.verifyEqual(r.stderr_level, 5);
+            tc.verifyEqual(r.timestamp_level, 2);
+            tc.verifyEqual(r.log_level, 4);
         end
 
         function timeoutIsPerContext(tc)
@@ -80,6 +85,8 @@ classdef tContext < IioTestCase
             tc.verifyEqual(a.params.timeout_ms, -1);
             a.set_timeout(iio.Context.TIMEOUT_NONBLOCK);
             tc.verifyEqual(a.params.timeout_ms, 0);
+            a.set_timeout(iio.Context.TIMEOUT_INFINITE);
+            tc.verifyEqual(a.params.timeout_ms, -1);
             a.set_timeout(iio.Context.TIMEOUT_BACKEND);
             tc.verifyEqual(a.params.timeout_ms, 1000);
             tc.verifyError(@() a.set_timeout(-5), 'iio:EINVAL');

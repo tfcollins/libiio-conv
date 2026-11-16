@@ -1,12 +1,15 @@
 classdef tObjectModel < IioTestCase
     %TOBJECTMODEL The M idioms every iio class relies on, without any gateway handle:
     %   equality, object arrays, empties, validity, parent lifetime, argument forms.
+    %   Objects with a made-up handle are ObjModelProbe objects, which call no gateway
+    %   command. A real iio class reads its name from the gateway in its constructor, so
+    %   it is built here only in the forms X() and X.empty, which hold no handle.
 
     methods (Test)
         function equality(tc)
-            a = iio.Channel([], uint64(5));
-            b = iio.Channel([], uint64(5));
-            c = iio.Channel([], uint64(6));
+            a = ObjModelProbe("a", Handle = uint64(5));
+            b = ObjModelProbe("b", Handle = uint64(5));
+            c = ObjModelProbe("c", Handle = uint64(6));
             tc.verifyEqual(a == b, true);
             tc.verifyEqual(a ~= c, true);
             tc.verifyEqual([a c] == a, [true false]);
@@ -17,12 +20,18 @@ classdef tObjectModel < IioTestCase
         end
 
         function objectArrays(tc)
-            c = iio.Channel([], uint64(6));
-            arr = iio.Channel.empty(1, 0);
-            arr(3) = c;     % elements 1 and 2 come from the constructor form iio.Channel()
+            c = ObjModelProbe("c", Handle = uint64(6));
+            arr = ObjModelProbe.empty(1, 0);
+            arr(3) = c;     % elements 1 and 2 come from the constructor form ObjModelProbe()
             tc.verifySize(arr, [1 3]);
-            tc.verifyClass(arr, 'iio.Channel');
+            tc.verifyClass(arr, 'ObjModelProbe');
             tc.verifyEqual(iio.internal.Object.handles(arr), uint64([0 0 6]));
+            % the same growth with a real class: every element is the form iio.Channel()
+            chans = iio.Channel.empty(1, 0);
+            chans(2) = iio.Channel();
+            tc.verifySize(chans, [1 2]);
+            tc.verifyClass(chans, 'iio.Channel');
+            tc.verifyEqual(iio.internal.Object.handles(chans), uint64([0 0]));
         end
 
         function empties(tc)
@@ -35,9 +44,9 @@ classdef tObjectModel < IioTestCase
         end
 
         function validity(tc)
-            a = iio.Channel([], uint64(5));
-            b = iio.Channel([], uint64(5));
-            c = iio.Channel([], uint64(6));
+            a = ObjModelProbe("a", Handle = uint64(5));
+            b = ObjModelProbe("b", Handle = uint64(5));
+            c = ObjModelProbe("c", Handle = uint64(6));
             tc.verifyTrue(isvalid(a));
             delete(a);
             tc.verifyFalse(isvalid(a));
