@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
   pull_request:
   workflow_dispatch:
 
@@ -75,3 +75,132 @@ jobs:
           cmake --build build-rel
           ctest --test-dir build-rel --output-on-failure
           build-rel/bench/bench_conv -n 12 tests/resources/conv_test.xml
+
+  matlab:
+    name: MATLAB bindings (${{ matrix.release }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        release: [R2025b, R2023b]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build libxml2-dev libzstd-dev bison flex
+
+      - name: Cache pinned libiio v1
+        uses: actions/cache@v4
+        with:
+          path: deps/install
+          key: libiio-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deps/build-libiio.sh') }}
+
+      - name: Build pinned libiio v1
+        run: deps/build-libiio.sh
+
+      - name: Set up MATLAB
+        id: setup-matlab
+        uses: matlab-actions/setup-matlab@v2
+        with:
+          release: ${{ matrix.release }}
+          cache: true
+
+      - name: Locate MATLAB
+        run: |
+          root="${{ steps.setup-matlab.outputs.matlabroot }}"
+          [ -n "$root" ] || root=$(dirname "$(dirname "$(readlink -f "$(command -v matlab)")")")
+          test -f "$root/extern/include/mex.h"
+          test -x "$root/bin/glnxa64/mlint" || echo "::warning::no mlint in $root (Step 10 has a row for this)"
+          echo "MATLAB_ROOT=$root" >> "$GITHUB_ENV"
+
+      - name: Configure and build (mock tests with sanitizers, real MEX)
+        run: |
+          cmake -S . -B build-mex -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DMatlab_ROOT_DIR="$MATLAB_ROOT"
+          cmake --build build-mex
+
+      - name: Gateway checks without MATLAB (G1 to G4)
+        run: ctest --test-dir build-mex -L mex --output-on-failure
+
+      - name: Prepare the result folder
+        run: mkdir -p test-results
+
+      - name: MATLAB tests (G5)
+        uses: matlab-actions/run-tests@v2
+        env:
+          IIO_MEX_TRACE: ${{ github.workspace }}/test-results/iio-mex-trace.log
+          IIO_TEST_RESULTS: ${{ github.workspace }}/test-results
+        with:
+          source-folder: matlab
+          select-by-folder: matlab/tests
+          test-results-junit: test-results/matlab.xml
+          strict: true
+          startup-options: -logfile test-results/matlab.log
+
+      - name: Process exit with libiio loaded (run 1 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 2 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 3 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 4 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 5 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 6 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 7 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 8 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 9 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 10 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: No crash dump after the exit checks
+        run: |
+          if ls ~/matlab_crash_dump.* >/dev/null 2>&1; then echo "exit check: crash dump found"; exit 1; fi
+
+      - name: Collect crash dumps
+        if: always()
+        run: mkdir -p test-results && cp ~/matlab_crash_dump.* test-results/ 2>/dev/null || true
+
+      - name: Upload MATLAB test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matlab-${{ matrix.release }}
+          path: test-results/
