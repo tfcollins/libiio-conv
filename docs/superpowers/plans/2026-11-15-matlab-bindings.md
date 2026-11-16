@@ -741,6 +741,8 @@ int dp_opt_gains(const mxArray *opts, unsigned int nb_chans, struct iio_conv_spe
 		double **gain, double **offset);
 ```
 
+As implemented by Task 9 (the header's comments are the authority): `opts` may also be `NULL` (an argument beyond `nrhs`) and then means `[]`; every `dp_opt_*` function returns `-EINVAL` for an `opts` that is neither (a struct array, an empty struct, a number, a cell); a field that is missing **or holds `[]`** takes its default. `dp_opt_number` takes a real full scalar of the ten numeric classes (not logical, not char), `dp_opt_bool` a logical scalar only, `dp_opt_string` a char row or 2-D empty char that fits `len` and has no embedded NUL. `dp_opt_spec` does not judge field combinations (a scale with an integer class, `raw` with `'iio'`): `iio_conv_create` / `iio_conv_stream_open` do. `dp_per_channel` also returns `-EINVAL` for `nb_chans == 0` and for an odd `nb_chans` with `is_complex`; on any error `*out` is `NULL`, and `dp_opt_gains` leaves all four pointers `NULL` with nothing allocated. Output pointers `type`, `cls`, `is_complex` of the class functions and of `dp_check_matrix` may be `NULL`. The header also exports the helpers these are built from: `dp_is_absent(a)` (`NULL` or `[]`), `dp_opt_field(opts, field, &f)` (the field's array, `NULL` when it takes its default; for fields that are not a number, a logical or text, such as `channels`) and `dp_classes()` (the table of `DP_NB_CLASSES` = 10 `struct dp_class { name, type, cls }`). `dp_add_*` with parent `0` would create a root (`gw_handle_add`): callers pass the id they resolved with `gw_arg_handle`.
+
 ### `tests/mex/dp_test.h` (Task 9; header only, `static inline`)
 
 ```c
