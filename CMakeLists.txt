@@ -16,6 +16,11 @@ option(IIO_CONV_BUILD_TESTS "Build tests" ON)
 option(IIO_CONV_BUILD_BENCH "Build benchmarks" OFF)
 
 add_compile_options(-Wall -Wextra -Werror=implicit-function-declaration)
+# Results must not depend on whether the compiler fuses a*b+c: every backend
+# has to match the scalar reference exactly, and scaling constants must be the
+# same on every architecture. Applies to the whole project, not only the
+# kernels (the constants are computed in plan.c).
+add_compile_options(-ffp-contract=off)
 if(IIO_CONV_SANITIZE)
 	add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
 	add_link_options(-fsanitize=address,undefined)
