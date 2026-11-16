@@ -33,7 +33,9 @@ classdef TxStream < iio.internal.Object
     %                         is closed; a second write is an error (default false)
     %       Timeout           how long write and flush wait for a free block, in ms.
     %                         -1 (default): as long as the timeout of the context
-    %                         allows; 0: not at all
+    %                         allows; 0: not at all. Not the values of
+    %                         iio.Context: there 0 is the default of the backend
+    %                         and -1 or Inf is no timeout
     %       Buffer            position of the buffer of DEV, counted from 0. -1
     %                         (default): the first buffer that has every channel
     %

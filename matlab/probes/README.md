@@ -1,6 +1,7 @@
 # MATLAB probes
 
-MATLAB cannot be started on the development machine: it runs only in GitHub Actions.
+A development aid from the time the bindings were written, when MATLAB could not be
+started on the development machine: it ran only in GitHub Actions.
 A probe is a small M file that answers ONE question about the behaviour of the real MATLAB
 interpreter that no local gate can answer: how `mexErrMsgIdAndTxt` propagates, `mexLock` and
 `clear`, `mexAtExit`, string objects, destructor order, class syntax, validation errors.

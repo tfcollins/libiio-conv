@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
 # G3: no MATLAB Code Analyzer error (level ML2 or ML3) in any .m file.
 # usage: check_mlint.sh [file.m ...]      default: every .m file under matlab/
 # mlint is taken from $MLINT, else $MATLAB_ROOT/bin/glnxa64/mlint. It needs no licence.

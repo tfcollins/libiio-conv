@@ -1,5 +1,7 @@
 # libiio v1 MATLAB Bindings Implementation Plan
 
+> **Status (2026-11-16): executed.** This is the historical implementation plan of the MATLAB bindings, kept as a record of the design decisions. Every task is done; the checkboxes were not ticked. Where the plan differs from the code, the code and `matlab/README.md` are authoritative. "Global Constraints" and its "Working rules" (no local MATLAB, the disk limit, the build directory names, the git rules) describe the environment the plan was executed in: they are not requirements for users or contributors.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Tasks of one wave run in parallel in ONE working tree; each implementer sees only the plan header (everything above "Tasks") and their own task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** MATLAB bindings for libiio v1: one MEX gateway plus `+iio` handle classes that reach every public function of `iio.h`, with a one-call receive/transmit path that converts straight into and out of MATLAB arrays through libiio-conv.
@@ -188,7 +190,7 @@ Failure modes that cross task boundaries. Each names the tasks that hold the tes
 
   | errno | Raised by the gateway when |
   |---|---|
-  | `ENOSYS` | the first argument is not a `char` row naming a registered command; a command is still a stub |
+  | `ENOSYS` | the first argument is not a `char` row naming a registered command (while the gateway was written also: a command that was still a stub; `gw_stub` is gone now that every command exists) |
   | `EINVAL` | argument or output count outside the command's limits; an argument of the wrong class, shape or range; an object of another device; an unknown option field |
   | `EBADF` | a handle id is zero where not allowed, was destroyed, never existed, or has another type |
   | `EPERM` | state misuse (see Global Constraints) |
@@ -1236,7 +1238,7 @@ Every returned id is a borrowed child of the device's context.
 
 | Command | Args | Out | Arguments | Result | Wraps |
 |---|---|---|---|---|---|
-| `buffer_create_stream` | 4 | 1 | buf, nb_blocks, samples_count, mask | st | =; result first; `iio_err` check; a mask of another device is `iio:EINVAL`; nb_blocks and samples_count are integers ≥ 1 (`gw_arg_int`: 0, 2.5, NaN, Inf are `iio:EINVAL`); a mask without a capturable channel and `samples_count * sample size` beyond `SIZE_MAX / 2` are `iio:EINVAL`. A size that still fits `size_t` is not refused: the backend's `malloc` fails (`iio:ENOMEM`; AddressSanitizer aborts on it in a mock test), and libiio creates as many blocks as asked: a test that passes random numbers bounds both values |
+| `buffer_create_stream` | 4 | 1 | buf, nb_blocks, samples_count, mask | st | =; result first; `iio_err` check; a mask of another device is `iio:EINVAL`; nb_blocks is an integer from 1 to 4096 (`DP_MAX_NB_BLOCKS` of `data_path.h`, the limit of `conv_stream_open`) and samples_count an integer ≥ 1 (`gw_arg_int`: 0, 2.5, NaN, Inf are `iio:EINVAL`); a mask without a capturable channel and `samples_count * sample size` beyond `SIZE_MAX / 2` are `iio:EINVAL`. A size that still fits `size_t` is not refused: the backend's `malloc` fails (`iio:ENOMEM`; AddressSanitizer aborts on it in a mock test): a test that passes random numbers bounds samples_count |
 | `stream_get_next_block` | 1 | 1 | st | blk (borrowed) | =; result first (the call moves blocks); `iio_err` check first: on an error (`iio:ETIMEDOUT`, ...) nothing is registered, `BLK_ENQUEUED` is set on every block view of the stream, and the error is raised. On success: registers the stream's buffer stream as a borrowed child of `st` on first use (with `BS_STARTED`); moves `BLK_ENQUEUED` (other flag bits of a view are kept). After a failed call the next one raises what the backend answers to the enqueue of a block it still holds: `iio:EPERM` on the fake, `iio:EBUSY` on emu (not tested on emu: it needs the 5 s stall) |
 | `stream_cancel` | 1 | 0 | st | — | = |
 | `stream_destroy` | 1 | 0 | id | — | = |
@@ -1284,7 +1286,7 @@ Channel check: at the pinned commit `iio_event_get_channel` returns the device's
 | `output` | (required) | true = transmit. Must equal the direction of the buffer, else `iio:EINVAL` |
 | `buffer` | -1 | 0-based buffer position on the device; -1 = the first buffer of the device whose scan elements contain every channel (`iio:EINVAL` if none) |
 | `samples` | (required) | samples per frame |
-| `nb_blocks` | 2 | 1 .. 4096, else `iio:EINVAL`: every block is created inside the open, one MEX call that nothing can interrupt (200000 blocks of one sample took 0.12 s on the fake, `UINT_MAX` would be about 45 minutes and the machine's memory). `buffer_create_stream` has no such limit |
+| `nb_blocks` | 2 | 1 .. 4096, else `iio:EINVAL`: every block is created inside the open, one MEX call that nothing can interrupt (200000 blocks of one sample took 0.12 s on the fake, `UINT_MAX` would be about 45 minutes and the machine's memory). `buffer_create_stream` has the same limit (`DP_MAX_NB_BLOCKS`) |
 | `cyclic` | false | |
 | `class` | `'double'` | one of `double single int8 uint8 int16 uint16 int32 uint32 int64 uint64`; for transmit only the class of the first converter |
 | `complex` | false | pair channels 2k, 2k+1 into column k |

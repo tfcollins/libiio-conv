@@ -8,6 +8,7 @@ function r = scan_contexts(backends, opts)
 %   R = iio.scan_contexts(BACKENDS, Name = Value) sets parameters of the scan:
 %       Timeout   milliseconds, Inf = no timeout
 %       LogLevel  "nolog", "error", "warning", "info" or "debug"
+%   R = iio.scan_contexts(Name = Value) scans the default backends with them.
 %
 %   R is a 1-by-N struct array with the fields uri and description (char), one
 %   element per context found, and 1-by-0 when nothing is found. R(k).uri is what

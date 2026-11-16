@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
 # G2: the MEX file exports exactly mexFunction and mexfilerequiredapiversion (version node
 # MEX), imports only R2018a-API (_800) MATLAB symbols, needs libiio.so.1, and has
 # libiio-conv linked in statically.

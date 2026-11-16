@@ -439,7 +439,7 @@ there means the MEX file.
 | `iio_block_enqueue` | `iio.Block.enqueue` |  |
 | `iio_block_dequeue` | `iio.Block.dequeue` | not ready with nonblock gives false, not an error; iio:EPERM from libiio clears the gateway flag "enqueued" |
 | `iio_block_get_buffer_stream` | `iio.Block.buffer_stream` |  |
-| `iio_buffer_create_stream` | `iio.Stream`, `iio.Buffer.create_stream` |  |
+| `iio_buffer_create_stream` | `iio.Stream`, `iio.Buffer.create_stream` | at most 4096 blocks (checked by the gateway: libiio creates every block inside the one call) |
 | `iio_stream_cancel` | `iio.Stream.cancel` |  |
 | `iio_stream_destroy` | `iio.Stream.destroy`, `iio.Stream.delete` |  |
 | `iio_stream_get_next_block` | `iio.Stream.next` | the error-encoded result is checked: a failed next raises (iio:ETIMEDOUT ...) and registers nothing |
@@ -524,6 +524,9 @@ to know:
 
 - No code generation yet (`codegen`, Simulink): the classes call a MEX file.
 - Linux x86-64 only.
+- No install rule: the MEX file finds `libiio.so.1` through an absolute
+  RUNPATH into `deps/install/lib` of this checkout, so it works on the machine
+  and in the place it was built.
 - An attribute value of 32767 bytes or more cannot be read from an iiod that
   speaks the legacy text protocol (`iio:EIO`), and a value that does not fit
   a buffer of 32 MiB cannot be read on any backend (`iio:EFBIG`).
@@ -566,10 +569,15 @@ another place). They run with
 | G4 | `matlab/tools/check_api.py`: every function of `iio.h` has a row in `matlab/api-map.tsv`, every row a command and a MATLAB member that exist |
 | G5 | the `matlab.unittest` suite in `matlab/tests`, run in MATLAB R2025b and R2023b by the CI job `matlab` |
 
-G1 needs one installed locale with a decimal comma (for example
-`sudo locale-gen de_DE.UTF-8`); without one its tests fail, they do not skip.
-`IIO_TEST_NO_COMMA_LOCALE=1` in the environment leaves the numeric-locale
-checks out instead.
+G1 needs Python 3, and it is complete only with the ASan/UBSan runtime of the
+compiler and one installed locale with a decimal comma (for example
+`sudo locale-gen de_DE.UTF-8`). Without the runtime the tests are built
+unsanitized, and without the locale the numeric-locale checks are left out
+with a notice. `-DIIO_CONV_STRICT_TESTS=ON`, which CI uses, makes each of
+these an error instead (and a compiler warning in the gateway too; a test
+run by hand, not by `ctest`, fails without the locale unless
+`IIO_TEST_NO_COMMA_LOCALE=1` is in the environment).
+`-DIIO_CONV_BUILD_MEX_TESTS=OFF` leaves G1 and G4 out of a build.
 
 The MATLAB suite needs a MEX file built with the tests enabled
 (`IIO_CONV_BUILD_TESTS=ON`, the default): part of it runs on the scripted
@@ -594,5 +602,8 @@ fails if it leaves a libiio object behind.
   (`delete(ctx)`, `iio.internal.shutdown()`), or the stream was closed.
 - **`iio:ENOSYS` for a `test_*` command, or the test suite fails at once**:
   the MEX file was built with `-DIIO_CONV_BUILD_TESTS=OFF`.
+- **What did the MEX file do?** With `IIO_MEX_TRACE=<file>` in the environment
+  before its first call, the MEX file appends one line per command and result
+  to that file, for the whole session. Every build has this.
 - **A receive frame on `emu:` holds values that are not in the data file**:
   the frame is longer than the file; see [Fast path](#fast-path).

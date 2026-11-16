@@ -27,7 +27,9 @@ classdef RxStream < iio.internal.Object
     %                         mask and sign extension (default false)
     %       NumBlocks         blocks that capture in turn (default 2, at most 4096)
     %       Timeout           how long read waits, in ms. -1 (default): as long as the
-    %                         timeout of the context allows; 0: not at all
+    %                         timeout of the context allows; 0: not at all.
+    %                         Not the values of iio.Context: there 0 is the default
+    %                         of the backend and -1 or Inf is no timeout
     %       Buffer            position of the buffer of DEV, counted from 0. -1
     %                         (default): the first buffer that has every channel
     %
