@@ -1,0 +1,142 @@
+c_function	command	matlab	status	notes
+iio_attr_read_raw	attr_read_raw	iio.Attr.read, iio.Attr.read_raw, iio.Attr.value	exposed	text, or the bytes exactly as libiio counted them (as_bytes)
+iio_attr_write_raw	attr_write_raw	iio.Attr.write_raw	exposed	byte count = numel of the uint8 input; no strlen
+iio_attr_get_name	attr_get_name	iio.Attr.name	exposed	
+iio_attr_get_filename	attr_get_filename	iio.Attr.filename	exposed	
+iio_attr_get_static_value	attr_get_static_value	iio.Attr.static_value	exposed	
+iio_attr_get_range	attr_get_range	iio.Attr.get_range	exposed	
+iio_attr_get_available	attr_get_available	iio.Attr.get_available	exposed	
+iio_attr_get_available_buf	-	-	not_exposed	caller-buffer variant of iio_attr_get_available (and it reads past the terminator of its buffer at the pinned commit); use iio.Attr.get_available
+iio_available_list_free	-	-	internal	called by attr_get_available after the list is copied
+iio_scan	scan	iio.scan_contexts	exposed	
+iio_scan_destroy	scan_destroy	iio.scan_contexts	exposed	
+iio_scan_get_results_count	scan_get_results	iio.scan_contexts	exposed	list form: one command returns every element
+iio_scan_get_description	scan_get_results	iio.scan_contexts	exposed	list form: one command returns every element
+iio_scan_get_uri	scan_get_results	iio.scan_contexts	exposed	list form: one command returns every element
+iio_strerror	strerror	iio.strerror	exposed	
+iio_has_backend	has_backend	iio.has_backend	exposed	
+iio_get_builtin_backends_count	get_builtin_backends	iio.backends	exposed	list form: one command returns every element
+iio_get_builtin_backend	get_builtin_backends	iio.backends	exposed	list form: one command returns every element
+iio_create_context	create_context	iio.Context	exposed	
+iio_context_destroy	context_destroy	iio.Context.delete	exposed	
+iio_context_get_version_major	context_get_version_major	iio.Context.version, iio.version	exposed	
+iio_context_get_version_minor	context_get_version_minor	iio.Context.version, iio.version	exposed	
+iio_context_get_version_patch	context_get_version_patch	iio.Context.version, iio.version	exposed	
+iio_context_get_version_tag	context_get_version_tag	iio.Context.version, iio.version	exposed	
+iio_context_get_xml	context_get_xml	iio.Context.xml	exposed	
+iio_free	-	-	internal	called by context_get_xml after the text is copied
+iio_context_get_name	context_get_name	iio.Context.name	exposed	
+iio_context_get_description	context_get_description	iio.Context.description	exposed	
+iio_context_get_attrs_count	context_get_attrs	iio.Context.attrs	exposed	list form: one command returns every element
+iio_context_get_attr	context_get_attrs	iio.Context.attrs	exposed	list form: one command returns every element
+iio_context_find_attr	context_find_attr	iio.Context.find_attr	exposed	
+iio_context_get_devices_count	context_get_devices	iio.Context.devices	exposed	list form: one command returns every element
+iio_context_get_device	context_get_devices	iio.Context.devices	exposed	list form: one command returns every element
+iio_context_find_device	context_find_device	iio.Context.find_device	exposed	
+iio_context_set_timeout	context_set_timeout	iio.Context.set_timeout	exposed	the timeout belongs to the whole context
+iio_context_get_params	context_get_params	iio.Context.params	exposed	
+iio_context_set_data	-	-	not_exposed	C user pointer, which a MATLAB value cannot be; keep the data in your own variable, for example a dictionary keyed by ctx.uri
+iio_context_get_data	-	-	not_exposed	see iio_context_set_data
+iio_context_ping	context_ping	iio.Context.ping	exposed	
+iio_device_get_context	device_get_context	iio.Device.context	exposed	
+iio_device_get_id	device_get_id	iio.Device.id	exposed	
+iio_device_get_name	device_get_name	iio.Device.name	exposed	
+iio_device_get_label	device_get_label	iio.Device.label	exposed	
+iio_device_get_channels_count	device_get_channels	iio.Device.channels	exposed	list form: one command returns every element
+iio_device_get_attrs_count	device_get_attrs	iio.Device.attrs	exposed	list form: one command returns every element
+iio_device_get_buffers_count	device_get_buffers	iio.Device.buffers	exposed	list form: one command returns every element
+iio_device_get_channel	device_get_channels	iio.Device.channels	exposed	list form: one command returns every element
+iio_device_get_attr	device_get_attrs	iio.Device.attrs	exposed	list form: one command returns every element
+iio_device_get_buffer	device_get_buffers	iio.Device.buffers	exposed	list form: one command returns every element
+iio_device_find_channel	device_find_channel	iio.Device.find_channel	exposed	
+iio_device_find_attr	device_find_attr	iio.Device.find_attr	exposed	
+iio_device_set_data	-	-	not_exposed	C user pointer; keep the data in your own variable, for example a dictionary keyed by dev.id
+iio_device_get_data	-	-	not_exposed	see iio_device_set_data
+iio_device_get_trigger	device_get_trigger	iio.Device.get_trigger	exposed	no trigger assigned (-ENODEV) gives an empty result, not an error
+iio_device_set_trigger	device_set_trigger	iio.Device.set_trigger	exposed	
+iio_device_is_trigger	device_is_trigger	iio.Device.is_trigger	exposed	
+iio_channel_get_device	channel_get_device	iio.Channel.device	exposed	
+iio_channel_get_id	channel_get_id	iio.Channel.id	exposed	
+iio_channel_get_name	channel_get_name	iio.Channel.name	exposed	
+iio_channel_get_label	channel_get_label	iio.Channel.label	exposed	
+iio_channel_is_output	channel_is_output	iio.Channel.output	exposed	
+iio_channel_is_scan_element	channel_is_scan_element	iio.Channel.scan_element	exposed	
+iio_channel_get_attrs_count	channel_get_attrs	iio.Channel.attrs	exposed	list form: one command returns every element
+iio_channel_get_attr	channel_get_attrs	iio.Channel.attrs	exposed	list form: one command returns every element
+iio_channel_find_attr	channel_find_attr	iio.Channel.find_attr	exposed	
+iio_channel_get_event_attrs_count	channel_get_event_attrs	iio.Channel.event_attrs	exposed	list form: one command returns every element
+iio_channel_get_event_attr	channel_get_event_attrs	iio.Channel.event_attrs	exposed	list form: one command returns every element
+iio_channel_find_event_attr	channel_find_event_attr	iio.Channel.find_event_attr	exposed	
+iio_channel_enable	channel_enable	iio.Channel.enable, iio.ChannelsMask.channels	exposed	
+iio_channel_disable	channel_disable	iio.Channel.disable, iio.ChannelsMask.channels	exposed	
+iio_channel_is_enabled	channel_is_enabled	iio.Channel.is_enabled	exposed	
+iio_channel_read	channel_read	iio.Channel.read	exposed	1-by-0 for a channel that is not enabled in the stream mask (checked by the gateway, not by libiio)
+iio_channel_write	channel_write	iio.Channel.write	exposed	0 for a channel that is not enabled in the stream mask (checked by the gateway)
+iio_channel_set_data	-	-	not_exposed	C user pointer; keep per-channel data in MATLAB, for example a dictionary keyed by ch.id
+iio_channel_get_data	-	-	not_exposed	see iio_channel_set_data
+iio_channel_get_type	channel_get_type	iio.Channel.type, iio.Channel.type_id	exposed	name from a table generated from iio.h, and the value
+iio_channel_get_modifier	channel_get_modifier	iio.Channel.modifier, iio.Channel.modifier_id	exposed	name from a table generated from iio.h, and the value
+iio_buffer_get_device	buffer_get_device	iio.Buffer.device	exposed	
+iio_buffer_get_attrs_count	buffer_get_attrs	iio.Buffer.attrs	exposed	list form: one command returns every element
+iio_buffer_get_attr	buffer_get_attrs	iio.Buffer.attrs	exposed	list form: one command returns every element
+iio_buffer_get_scan_elements_count	buffer_get_scan_elements	iio.Buffer.scan_elements	exposed	list form: one command returns every element
+iio_buffer_get_scan_element	buffer_get_scan_elements	iio.Buffer.scan_elements	exposed	list form: one command returns every element
+iio_buffer_find_attr	buffer_find_attr	iio.Buffer.find_attr	exposed	
+iio_buffer_is_output	buffer_is_output	iio.Buffer.output	exposed	
+iio_buffer_set_data	-	-	not_exposed	C user pointer; keep per-buffer data in MATLAB, for example in a property of your own class
+iio_buffer_get_data	-	-	not_exposed	see iio_buffer_set_data
+iio_buffer_open	buffer_open	iio.BufferStream, iio.Buffer.open	exposed	
+iio_buffer_close	buffer_close	iio.BufferStream.close, iio.BufferStream.delete	exposed	
+iio_buffer_stream_cancel	buffer_stream_cancel	iio.BufferStream.cancel	exposed	
+iio_buffer_stream_start	buffer_stream_start	iio.BufferStream.start	exposed	
+iio_buffer_stream_stop	buffer_stream_stop	iio.BufferStream.stop	exposed	
+iio_buffer_stream_get_channels_mask	buffer_stream_get_channels_mask	iio.BufferStream.mask, iio.BufferStream.sample_size	exposed	the mask actually in use, read-only
+iio_buffer_stream_create_block	buffer_stream_create_block	iio.Block, iio.BufferStream.create_block	exposed	
+iio_block_destroy	block_destroy	iio.Block.destroy, iio.Block.delete	exposed	
+iio_block_get_dmabuf_fd	block_get_dmabuf_fd	iio.Block.dmabuf_fd	exposed	
+iio_block_disable_cpu_access	block_disable_cpu_access	iio.Block.disable_cpu_access	exposed	
+iio_block_start	-	-	not_exposed	raw pointer; use iio.Block.nbytes, iio.Block.bytes, iio.Block.set_bytes, iio.Block.read, iio.Block.write
+iio_block_first	block_first	iio.Block.first	exposed	returned as a byte offset from the start of the block, not a pointer
+iio_block_end	-	-	not_exposed	raw pointer; use iio.Block.nbytes, iio.Block.bytes, iio.Block.set_bytes, iio.Block.read, iio.Block.write
+iio_block_foreach_sample	-	-	not_exposed	C callback (and it miscounts samples when a sample has tail padding at the pinned commit); use iio.Block.read(Channels=...) or iio.Channel.read(block)
+iio_block_enqueue	block_enqueue	iio.Block.enqueue	exposed	
+iio_block_dequeue	block_dequeue	iio.Block.dequeue	exposed	not ready with nonblock gives false, not an error; iio:EPERM from libiio clears the gateway flag "enqueued"
+iio_block_get_buffer_stream	block_get_buffer_stream	iio.Block.buffer_stream	exposed	
+iio_buffer_create_stream	buffer_create_stream	iio.Stream, iio.Buffer.create_stream	exposed	
+iio_stream_cancel	stream_cancel	iio.Stream.cancel	exposed	
+iio_stream_destroy	stream_destroy	iio.Stream.destroy, iio.Stream.delete	exposed	
+iio_stream_get_next_block	stream_get_next_block	iio.Stream.next	exposed	the error-encoded result is checked: a failed next raises (iio:ETIMEDOUT ...) and registers nothing
+iio_event_get_channel	event_get_channel	iio.EventStream.decode, iio.EventStream.read	exposed	takes the event id; the result is re-checked because libiio returns the last channel when nothing matches
+iio_device_create_event_stream	device_create_event_stream	iio.EventStream, iio.Device.create_event_stream	exposed	
+iio_event_stream_destroy	event_stream_destroy	iio.EventStream.destroy, iio.EventStream.delete	exposed	
+iio_event_stream_read	event_stream_read	iio.EventStream.read	exposed	no event (-EBUSY, -EAGAIN, -ETIMEDOUT) gives an empty result, not an error
+iio_create_channels_mask	create_channels_mask	iio.ChannelsMask	exposed	takes the device instead of its channel count
+iio_channels_mask_destroy	channels_mask_destroy	iio.ChannelsMask.destroy, iio.ChannelsMask.delete	exposed	
+iio_device_get_sample_size	device_get_sample_size	iio.Device.sample_size, iio.ChannelsMask.sample_size, iio.BufferStream.sample_size	exposed	
+iio_channel_get_index	channel_get_index	iio.Channel.index	exposed	
+iio_channel_get_data_format	channel_get_data_format	iio.Channel.data_format	exposed	returned as a struct copy
+iio_channel_convert	channel_convert	iio.Channel.convert	exposed	
+iio_channel_convert_inverse	channel_convert_inverse	iio.Channel.convert_inverse	exposed	
+iio_channel_refresh_format	channel_refresh_format	iio.Channel.refresh_format	exposed	
+iio_device_get_event_attrs_count	device_get_event_attrs	iio.Device.event_attrs	exposed	list form: one command returns every element
+iio_device_get_event_attr	device_get_event_attrs	iio.Device.event_attrs	exposed	list form: one command returns every element
+iio_device_find_event_attr	device_find_event_attr	iio.Device.find_event_attr	exposed	
+iio_device_get_debug_attrs_count	device_get_debug_attrs	iio.Device.debug_attrs	exposed	list form: one command returns every element
+iio_device_get_debug_attr	device_get_debug_attrs	iio.Device.debug_attrs	exposed	list form: one command returns every element
+iio_device_find_debug_attr	device_find_debug_attr	iio.Device.find_debug_attr	exposed	
+iio_device_reg_write	device_reg_write	iio.Device.reg_write	exposed	
+iio_device_reg_read	device_reg_read	iio.Device.reg_read	exposed	
+iio_attr_read_bool	attr_read_bool	iio.Attr.read_bool	exposed	
+iio_attr_read_longlong	attr_read_longlong	iio.Attr.read_longlong	exposed	int64 result, never through double; also reached from C by the macro iio_attr_read
+iio_attr_read_double	attr_read_double	iio.Attr.read_double	exposed	
+iio_attr_write_string	attr_write_string	iio.Attr.write_string, iio.Attr.write, iio.Attr.value	exposed	
+iio_attr_write_bool	attr_write_bool	iio.Attr.write_bool, iio.Attr.write	exposed	
+iio_attr_write_longlong	attr_write_longlong	iio.Attr.write_longlong, iio.Attr.write	exposed	integer input read exactly; also reached from C by the macro iio_attr_write
+iio_attr_write_double	attr_write_double	iio.Attr.write_double, iio.Attr.write	exposed	Exact=true (default) sends shortest exact fixed notation through iio_attr_write_string instead
+iio_ptr	-	-	internal	header inline; errors reach MATLAB as iio:<ERRNONAME> exceptions
+iio_err	-	-	internal	header inline; applied by the gateway to every pointer result
+iio_err_cast	-	-	internal	header inline; nothing to cast in MATLAB
+hwmon_channel_get_type	hwmon_channel_get_type	iio.Channel.type, iio.Channel.type_id	exposed	used when the device is a hwmon device
+iio_device_is_hwmon	device_is_hwmon	iio.Device.is_hwmon	exposed	
+iio_event_get_type	event_get_type	iio.EventStream.decode, iio.EventStream.read	exposed	takes the event id; name from a table generated from iio.h, and the value
+iio_event_get_direction	event_get_direction	iio.EventStream.decode, iio.EventStream.read	exposed	takes the event id; name from a table generated from iio.h, and the value
