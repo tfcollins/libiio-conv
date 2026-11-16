@@ -24,12 +24,19 @@ have not been run on hardware yet.
     cmake --build build
     ctest --test-dir build --output-on-failure
 
-Needs GCC, CMake 3.20 or later, Ninja, Python 3 (at configure and build
-time, for the tests of the MATLAB gateway) and, for `ctest`, one installed
-locale with a decimal comma (`sudo locale-gen de_DE.UTF-8`);
-`IIO_TEST_NO_COMMA_LOCALE=1` in the environment leaves the numeric-locale
-checks out instead. `deps/build-libiio.sh` needs git and the packages
-`libxml2-dev libzstd-dev bison flex`.
+Needs GCC, CMake 3.20 or later and Ninja. `deps/build-libiio.sh` needs git
+and the packages `libxml2-dev libzstd-dev bison flex`.
+
+The default build also builds the tests of the MATLAB gateway (label `mex`;
+they need no MATLAB). These use Python 3 (at configure and build time), the
+ASan/UBSan runtime of the compiler (`libasan`, `libubsan`: separate packages
+on some distributions) and one installed locale with a decimal comma
+(`sudo locale-gen de_DE.UTF-8`). What is missing is left out with a message:
+without Python the gateway tests are not built, without the runtime they are
+built unsanitized, without the locale their numeric-locale checks do not
+run. `-DIIO_CONV_STRICT_TESTS=ON` (CI uses it) makes each of these an error,
+and compiles the gateway with `-Werror`. `-DIIO_CONV_BUILD_MEX_TESTS=OFF`
+builds the C library and its own tests only.
 
 ## Backends
 

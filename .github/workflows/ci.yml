@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, 'feat/**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -51,13 +51,13 @@ jobs:
 
       - name: Build and test
         run: |
-          cmake -S . -B build -G Ninja
+          cmake -S . -B build -G Ninja -DIIO_CONV_STRICT_TESTS=ON
           cmake --build build
           ctest --test-dir build --output-on-failure
 
       - name: Build and test with sanitizers
         run: |
-          cmake -S . -B build-asan -G Ninja -DIIO_CONV_SANITIZE=ON
+          cmake -S . -B build-asan -G Ninja -DIIO_CONV_SANITIZE=ON -DIIO_CONV_STRICT_TESTS=ON
           cmake --build build-asan
           ctest --test-dir build-asan --output-on-failure
 
@@ -72,13 +72,13 @@ jobs:
       - name: Build and test with FMA available (x86-64-v3)
         if: runner.arch == 'X64'
         run: |
-          cmake -S . -B build-fma -G Ninja -DCMAKE_C_FLAGS=-march=x86-64-v3 -DIIO_CONV_SANITIZE=ON
+          cmake -S . -B build-fma -G Ninja -DCMAKE_C_FLAGS=-march=x86-64-v3 -DIIO_CONV_SANITIZE=ON -DIIO_CONV_STRICT_TESTS=ON
           cmake --build build-fma
           ctest --test-dir build-fma --output-on-failure
 
       - name: Release build, tests and a short benchmark
         run: |
-          cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DIIO_CONV_BUILD_BENCH=ON
+          cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DIIO_CONV_BUILD_BENCH=ON -DIIO_CONV_STRICT_TESTS=ON
           cmake --build build-rel
           ctest --test-dir build-rel --output-on-failure
           build-rel/bench/bench_conv -n 12 tests/resources/conv_test.xml
@@ -128,16 +128,28 @@ jobs:
           root="${{ steps.setup-matlab.outputs.matlabroot }}"
           [ -n "$root" ] || root=$(dirname "$(dirname "$(readlink -f "$(command -v matlab)")")")
           test -f "$root/extern/include/mex.h"
-          test -x "$root/bin/glnxa64/mlint" || echo "::warning::no mlint in $root (Step 10 has a row for this)"
+          test -x "$root/bin/glnxa64/mlint" || echo "::warning::no mlint in $root: the test mex_mlint will exit 77 (see matlab/tools/check_mlint.sh)"
           echo "MATLAB_ROOT=$root" >> "$GITHUB_ENV"
 
       - name: Configure and build (mock tests with sanitizers, real MEX)
         run: |
-          cmake -S . -B build-mex -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DMatlab_ROOT_DIR="$MATLAB_ROOT"
+          cmake -S . -B build-mex -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DIIO_CONV_STRICT_TESTS=ON -DMatlab_ROOT_DIR="$MATLAB_ROOT"
           cmake --build build-mex
 
       - name: Gateway checks without MATLAB (G1 to G4)
         run: ctest --test-dir build-mex -L mex --output-on-failure
+
+      # The MEX file as it is handed out (matlab/README.md): no test_* commands, no fake backend.
+      # Its own output directory: matlab/iio_mex.mexa64 above is the one the MATLAB tests use.
+      - name: MEX without the test hooks builds
+        run: |
+          cmake -S . -B build-mex-dist -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DIIO_CONV_BUILD_TESTS=OFF \
+            -DIIO_CONV_STRICT_TESTS=ON -DMatlab_ROOT_DIR="$MATLAB_ROOT" -DIIO_MEX_OUTPUT_DIR="$PWD/build-mex-dist/out"
+          cmake --build build-mex-dist
+          test -f build-mex-dist/out/iio_mex.mexa64
+          if strings build-mex-dist/out/iio_mex.mexa64 | grep -q test_create_fake; then
+            echo "the test commands are in the MEX file"; exit 1
+          fi
 
       - name: Prepare the result folder
         run: mkdir -p test-results

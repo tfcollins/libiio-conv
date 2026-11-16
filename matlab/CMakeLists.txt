@@ -10,7 +10,6 @@ if(IIO_CONV_BUILD_TESTS)
 	list(APPEND IIO_MEX_DEFS IIO_MEX_TEST_HOOKS)
 endif()
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(IIO_MEX_ENUMS_C ${CMAKE_CURRENT_BINARY_DIR}/iio_mex_enums.c)
 add_custom_command(OUTPUT ${IIO_MEX_ENUMS_C}
 	COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_enums.py
@@ -32,16 +31,36 @@ function(iio_mex_objects variant runtime)
 		add_dependencies(${tgt} iio-mex-enums)
 		target_include_directories(${tgt} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/mex ${PROJECT_SOURCE_DIR}/tests)
 		target_compile_definitions(${tgt} PUBLIC ${IIO_MEX_DEFS})
-		target_compile_options(${tgt} PRIVATE -Werror)   # gate G2 of wave 1: a warning fails the build
+		if(IIO_CONV_STRICT_TESTS)
+			target_compile_options(${tgt} PRIVATE -Werror)   # gate G2 of wave 1: a warning fails the build
+		endif()
 		target_link_libraries(${tgt} PUBLIC iio-conv-static ${runtime} ${CMAKE_DL_LIBS})
 	endforeach()
 endfunction()
 
-if(IIO_CONV_BUILD_TESTS)
+if(IIO_MEX_TESTS)
 	# Sanitizers for the mock build only: the same build directory also makes the real MEX.
 	add_library(iio-mex-mockrt INTERFACE)
 	target_include_directories(iio-mex-mockrt INTERFACE ${PROJECT_SOURCE_DIR}/tests/mxmock)
+	set(sanitize OFF)
 	if(IIO_CONV_MEX_SANITIZE AND NOT IIO_CONV_SANITIZE)
+		# The runtime (libasan, libubsan) is a separate package on some systems.
+		include(CheckCSourceCompiles)
+		include(CMakePushCheckState)
+		cmake_push_check_state(RESET)
+		set(CMAKE_REQUIRED_FLAGS -fsanitize=address,undefined)
+		set(CMAKE_REQUIRED_LINK_OPTIONS -fsanitize=address,undefined)
+		check_c_source_compiles("int main(void) { return 0; }" IIO_MEX_HAVE_SANITIZERS)
+		cmake_pop_check_state()
+		if(IIO_MEX_HAVE_SANITIZERS)
+			set(sanitize ON)
+		elseif(IIO_CONV_STRICT_TESTS)
+			message(FATAL_ERROR "IIO_CONV_MEX_SANITIZE: the compiler cannot link with -fsanitize=address,undefined")
+		else()
+			message(STATUS "No ASan/UBSan runtime: the MATLAB gateway tests are built without sanitizers")
+		endif()
+	endif()
+	if(sanitize)
 		target_compile_options(iio-mex-mockrt INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
 		target_link_options(iio-mex-mockrt INTERFACE -fsanitize=address,undefined)
 	endif()
@@ -62,6 +81,9 @@ if(IIO_CONV_BUILD_MATLAB)
 	if(IIO_CONV_SANITIZE)
 		message(FATAL_ERROR "IIO_CONV_BUILD_MATLAB cannot be combined with IIO_CONV_SANITIZE: "
 			"MATLAB cannot load a sanitized MEX file. The mock tests are sanitized anyway.")
+	endif()
+	if(POLICY CMP0144)
+		cmake_policy(SET CMP0144 NEW)   # an environment variable MATLAB_ROOT (CI has one) is no warning
 	endif()
 	find_package(Matlab REQUIRED)   # needs -DMatlab_ROOT_DIR=<root>; MATLAB is not started
 	add_library(iio-mex-realrt INTERFACE)
@@ -87,7 +109,7 @@ if(IIO_CONV_BUILD_MATLAB)
 		C_VISIBILITY_PRESET default
 		LIBRARY_OUTPUT_DIRECTORY ${IIO_MEX_OUTPUT_DIR})
 
-	if(IIO_CONV_BUILD_TESTS)
+	if(IIO_CONV_BUILD_TESTS)   # these need neither the mock runtime nor Python
 		set(mlibs "LD_LIBRARY_PATH=${Matlab_ROOT_DIR}/bin/glnxa64:${Matlab_ROOT_DIR}/sys/os/glnxa64")
 		add_test(NAME mex_exports COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_mex_exports.sh $<TARGET_FILE:iio_mex>)
 		add_executable(mex_loadcheck ${PROJECT_SOURCE_DIR}/tests/mex/mex_loadcheck.c)

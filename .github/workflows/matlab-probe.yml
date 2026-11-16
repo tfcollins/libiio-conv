@@ -46,7 +46,7 @@ jobs:
           root="${{ steps.setup-matlab.outputs.matlabroot }}"
           [ -n "$root" ] || root=$(dirname "$(dirname "$(readlink -f "$(command -v matlab)")")")
           test -f "$root/extern/include/mex.h"
-          test -x "$root/bin/glnxa64/mlint" || echo "::warning::no mlint in $root (Step 10 has a row for this)"
+          test -x "$root/bin/glnxa64/mlint" || echo "::warning::no mlint in $root: the test mex_mlint will exit 77 (see matlab/tools/check_mlint.sh)"
           echo "MATLAB_ROOT=$root" >> "$GITHUB_ENV"
 
       - name: Configure and build (mock tests with sanitizers, real MEX)

@@ -63,3 +63,8 @@ set_tests_properties(${names} PROPERTIES LABELS mex TIMEOUT 30)
 # call: an uninitialised field of struct gw_call then fails this test instead of reading as 0
 # from AddressSanitizer's fake stack.
 set_tests_properties(test_dispatch PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_stack_use_after_return=0")
+if(NOT IIO_CONV_STRICT_TESTS)
+	# Without an installed locale that has a decimal comma the numeric-locale checks are left
+	# out with a notice instead of failing the test. They run wherever such a locale exists.
+	set_property(TEST ${names} APPEND PROPERTY ENVIRONMENT "IIO_TEST_NO_COMMA_LOCALE=1")
+endif()
