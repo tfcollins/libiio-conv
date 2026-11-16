@@ -68,6 +68,10 @@ tx = iio.TxStream(ctx.find_device("cf-ad9361-dds-core-lpc"), ["voltage0" "voltag
 tx.write(tone);
 ```
 
+`matlab/examples` has five functions to start from, each with defaults for
+an ADALM-Pluto and a help text: `rx_capture`, `tx_cyclic`, `attributes`,
+`low_level_blocks` and `list_contexts` (`addpath('<repo>/matlab/examples')`).
+
 `help iio.RxStream`, `help iio.Attr` and so on give the reference of each
 class. Members are named as in libiio's Python binding (`find_device`,
 `read_longlong`); name-value options are written `LikeThis`.
@@ -235,8 +239,9 @@ The options are readable as properties of the stream afterwards.
   `class` is `OutputDataType`.
 - **On the `emu:` backend** a frame must not be longer than the data file
   beside the XML file. A longer frame is only partly data although `valid`
-  is true. Name `SamplesPerFrame` there (the default is meant for hardware);
-  the examples in `matlab/examples` do when they run on the test fixture.
+  is true. Name `SamplesPerFrame` there (the default is meant for hardware):
+  the fixture calls in the help of `rx_capture` and `low_level_blocks` in
+  `matlab/examples` ask for 1000 samples, and the fixture file holds 4096.
 
 ## Low-level data path
 
