@@ -335,7 +335,7 @@ static inline void fake_clear_log(void)
 static inline struct iio_context *fake_create_context(const char *xml_path)
 {
 	static const struct iio_context_params params;
-	char uri[PATH_MAX + 8];
+	char uri[PATH_MAX + 40];   /* "xml:" and a path of up to struct mt_fixture.xml: no -Wformat-truncation */
 
 	snprintf(uri, sizeof(uri), "xml:%s", xml_path);
 	return iio_create_context_from_xml(&params, uri, &fake_backend, "(fake)", NULL, NULL, 0);
