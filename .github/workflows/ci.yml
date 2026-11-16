@@ -62,6 +62,13 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Build and test with FMA available (x86-64-v3)
+        if: runner.arch == 'X64'
+        run: |
+          cmake -S . -B build-fma -G Ninja -DCMAKE_C_FLAGS=-march=x86-64-v3 -DIIO_CONV_SANITIZE=ON
+          cmake --build build-fma
+          ctest --test-dir build-fma --output-on-failure
+
       - name: Release build, tests and a short benchmark
         run: |
           cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DIIO_CONV_BUILD_BENCH=ON
