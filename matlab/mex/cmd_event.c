@@ -90,7 +90,9 @@ static int arg_event(struct gw_call *c, int k, struct iio_event *ev)
 
 	ev->id = id;
 	ev->timestamp = 0;
-	return ret;
+	if (ret)        /* the text of gw_arg_id() speaks of a handle */
+		return gw_fail(c, ret, "argument %d: expected an event id (a real uint64 scalar)", k + 1);
+	return 0;
 }
 
 /* [name, value] = cmd(id): the C enumerator, or 'UNKNOWN' for a value that has none */

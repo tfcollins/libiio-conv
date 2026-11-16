@@ -31,11 +31,6 @@ int gw_fail(struct gw_call *c, int err, const char *fmt, ...)
 	return err;
 }
 
-int gw_stub(struct gw_call *c)
-{
-	return gw_fail(c, -ENOSYS, "not implemented");
-}
-
 /* Memory that libiio returned from malloc and that the running command still reads. */
 #define MAX_PARKED 4
 

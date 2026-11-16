@@ -28,7 +28,7 @@ int gw_arg_str0(struct gw_call *c, int k, char **s); /* absent or [] -> *s = NUL
 int gw_arg_bool(struct gw_call *c, int k, bool *v);  /* logical scalar */
 /* Real, non-sparse, integer-valued numeric scalar in [lo, hi]. int64/uint64 are read exactly. */
 int gw_arg_int(struct gw_call *c, int k, long long lo, long long hi, long long *v);
-int gw_arg_index(struct gw_call *c, int k, unsigned int *v);   /* gw_arg_int in [0, UINT_MAX] */
+int gw_arg_index(struct gw_call *c, int k, unsigned int *v);   /* gw_arg_int in [0, UINT_MAX]; no command uses it yet */
 int gw_arg_double(struct gw_call *c, int k, double *v);        /* real numeric scalar */
 /* Real uint8 vector (or empty uint8): pointer INTO prhs (read only), and the element count.
  * *p is never NULL: for an empty array (mxGetData is NULL) it points at a static byte, *n = 0. */

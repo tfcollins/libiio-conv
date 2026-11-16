@@ -58,9 +58,6 @@ extern const struct gw_group gw_group_mex,   /* iio_mex.c */
 	gw_group_buffer, gw_group_block, gw_group_stream, gw_group_event, gw_group_lowlevel,
 	gw_group_conv, gw_group_test;            /* cmd_<name>.c; gw_group_test only with IIO_MEX_TEST_HOOKS */
 
-/* Table entry of a command whose task has not landed yet: gw_fail(c, -ENOSYS, "not implemented"). */
-int gw_stub(struct gw_call *c);
-
 /* Records the message in c and returns err (negative). The dispatcher raises "iio:<ERRNO NAME>". */
 int gw_fail(struct gw_call *c, int err, const char *fmt, ...) __attribute__((format(__printf__, 3, 4)));
 

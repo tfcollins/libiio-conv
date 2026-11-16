@@ -179,6 +179,7 @@ static void test_emu(const struct mt_fixture *fx)
 
 	/* arguments */
 	CHECK(mt_raises("iio:EINVAL", "event_get_type", 1, mt_dbl(0)));
+	CHECK(strstr(mock_err_msg(), "an event id") != NULL && !strstr(mock_err_msg(), "handle"));
 	CHECK(mt_raises("iio:EINVAL", "event_get_direction", 1, mt_dbl(0)));
 	CHECK(mt_raises("iio:EINVAL", "event_get_channel", 3, mt_dbl(0), mt_u64(phy), mt_bool(false)));
 	CHECK(mt_raises("iio:EINVAL", "event_get_type", 1, mt_i64(0)));

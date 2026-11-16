@@ -268,7 +268,7 @@ static int channel_read(struct gw_call *c)
 	len = channel_bytes(&b, ch, NULL);
 	out = mxCreateUninitNumericMatrix(1, len, mxUINT8_CLASS, mxREAL);
 	if (!out)
-		return -ENOMEM;
+		return gw_fail(c, -ENOMEM, "out of memory for the result");
 	c->plhs[0] = out;       /* the dispatcher destroys it if this command fails */
 	if (len && iio_channel_read(ch, b.ptr, mxGetData(out), len, raw) != len)
 		return gw_fail(c, -EIO, "libiio read fewer bytes than the block holds for this channel");
@@ -508,7 +508,7 @@ static int get_conv(struct gw_call *c, gw_id bs, const struct iio_channels_mask 
 		cache = calloc(1, sizeof(*cache));
 		if (!cache) {
 			iio_conv_destroy(*conv);
-			return -ENOMEM;
+			return gw_fail(c, -ENOMEM, "out of memory");
 		}
 		gw_handle_set_cache(bs, cache, cache_free);
 	}
@@ -519,7 +519,7 @@ static int get_conv(struct gw_call *c, gw_id bs, const struct iio_channels_mask 
 	ret = entry_fill(victim, *conv, chans, nb_chans, spec);
 	if (ret) {
 		iio_conv_destroy(*conv);
-		return ret;
+		return gw_fail(c, ret, "out of memory");
 	}
 	victim->used = ++cache->clock;
 	return 0;
@@ -566,24 +566,24 @@ static int xfer_channels(struct gw_call *c, const mxArray *opts, const struct ii
 	if (f && (mxGetClassID(f) != mxUINT64_CLASS || mxIsComplex(f) || mxIsSparse(f) ||
 	    mxGetNumberOfDimensions(f) != 2 ||
 	    (mxGetNumberOfElements(f) && mxGetM(f) != 1 && mxGetN(f) != 1)))
-		return gw_fail(c, -EINVAL, "option channels: a uint64 vector of channel ids is expected");
+		return gw_fail(c, -EINVAL, "option 'channels': a uint64 vector of channel ids is expected");
 	if (f && mxGetNumberOfElements(f)) {
 		if (mxGetNumberOfElements(f) > UINT_MAX / 2)
-			return gw_fail(c, -EINVAL, "option channels: too many ids");
+			return gw_fail(c, -EINVAL, "option 'channels': too many ids");
 		n = (unsigned int)mxGetNumberOfElements(f);
 		ids = mxGetData(f);
 		x->chans = mxMalloc(n * sizeof(*x->chans));
 		if (!ids || !x->chans)
-			return -ENOMEM;
+			return gw_fail(c, -ENOMEM, "out of memory");
 		for (unsigned int i = 0; i < n; i++) {
 			ch = gw_handle_ptr(ids[i], GW_T_CHANNEL);
 			if (!ch)
-				return gw_fail(c, -EBADF, "option channels: element %u is not a channel", i + 1);
+				return gw_fail(c, -EBADF, "option 'channels': element %u is not a channel", i + 1);
 			if (iio_channel_get_device(ch) != dev)
-				return gw_fail(c, -EINVAL, "option channels: element %u is a channel of another device", i + 1);
+				return gw_fail(c, -EINVAL, "option 'channels': element %u is a channel of another device", i + 1);
 			for (unsigned int k = 0; k < i; k++)
 				if (x->chans[k] == ch)
-					return gw_fail(c, -EINVAL, "option channels: element %u is given twice", i + 1);
+					return gw_fail(c, -EINVAL, "option 'channels': element %u is given twice", i + 1);
 			x->chans[i] = ch;
 		}
 		x->nb_chans = n;
@@ -688,7 +688,7 @@ static int block_read(struct gw_call *c)
 		return ret;
 	ret = xfer_gains(c, opts, &x);
 	if (!ret && dp_opt_int(opts, "samples", 1, LLONG_MAX, 0, &samples))
-		ret = gw_fail(c, -EINVAL, "option samples: an integer of at least 1 is expected");
+		ret = gw_fail(c, -EINVAL, "option 'samples': an integer of at least 1 is expected");
 	if (ret)
 		goto out;
 	rows = x.capacity;
@@ -700,7 +700,7 @@ static int block_read(struct gw_call *c)
 	 * across one */
 	out = mxCreateUninitNumericMatrix(rows, cols, x.cls, x.spec.complex_iq ? mxCOMPLEX : mxREAL);
 	if (!out) {
-		ret = -ENOMEM;
+		ret = gw_fail(c, -ENOMEM, "out of memory for the result");
 		goto out;
 	}
 	c->plhs[0] = out;       /* the dispatcher destroys it if this command fails */
@@ -754,7 +754,7 @@ static int block_write(struct gw_call *c)
 		goto out;
 	}
 	if (dp_opt_bool(opts, "complex", data_complex, &want_complex)) {
-		ret = gw_fail(c, -EINVAL, "option complex: a logical scalar is expected");
+		ret = gw_fail(c, -EINVAL, "option 'complex': a logical scalar is expected");
 		goto out;
 	}
 	if (data_complex && !want_complex) {
@@ -778,7 +778,7 @@ static int block_write(struct gw_call *c)
 	if (pairs) {
 		iq = mxMalloc(x.nb_chans * sizeof(*iq));
 		if (!iq) {
-			ret = -ENOMEM;
+			ret = gw_fail(c, -ENOMEM, "out of memory");
 			goto out;
 		}
 	}
