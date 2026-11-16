@@ -31,7 +31,7 @@ classdef tObjectModel < IioTestCase
             tc.verifyClass(e, 'iio.Attr');
             tc.verifyTrue(isempty(e));
             tc.verifySize(e == e, [1 0]);
-            tc.verifySize([e iio.Attr([], uint64(1))], [1 1]);
+            tc.verifySize([e iio.Attr()], [1 1]);
         end
 
         function validity(tc)
