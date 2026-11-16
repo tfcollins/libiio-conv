@@ -2,6 +2,7 @@
 /* Command group "context": creation and its errors, identity, attribute and device lists,
  * parameters and timeout (one context's own), XML, ping, allocation failures, teardown. */
 #include "mex_test.h"
+#include <locale.h>
 #include <stdarg.h>
 MT_GROUPS(&gw_group_context);
 
@@ -94,6 +95,27 @@ static char *xml_of(uint64_t ctx)
 	}
 	mxDestroyArray(out[0]);
 	return copy;
+}
+
+/* the text with its character k (0-based) replaced by a NUL */
+static mxArray *nul_str(const char *text, size_t k)
+{
+	mxArray *a = mt_str(text);
+
+	((mxChar *)mxGetData(a))[k] = 0;
+	return a;
+}
+
+/* scale 0.25 of emu-rx/voltage2, as libiio holds it for this context (the offset is not in the
+ * XML: the xml: backend has none) */
+static bool voltage2_scaled(uint64_t ctx)
+{
+	const struct iio_context *c = gw_handle_ptr(ctx, GW_T_CONTEXT);
+	const struct iio_device *dev = c ? iio_context_find_device(c, "emu-rx") : NULL;
+	const struct iio_channel *ch = dev ? iio_device_find_channel(dev, "voltage2", false) : NULL;
+	const struct iio_data_format *f = ch ? iio_channel_get_data_format(ch) : NULL;
+
+	return f && f->with_scale && f->scale == 0.25;
 }
 
 int main(int argc, char **argv)
@@ -263,6 +285,37 @@ int main(int argc, char **argv)
 	mt_ok("context_destroy", 1, mt_u64(xctx));
 	mt_ok("context_destroy", 1, mt_u64(ctx2));
 	CHECK(gw_handle_count() == 13);
+
+	/* text with an embedded NUL is refused, not cut */
+	CHECK(mt_raises("iio:EINVAL", "context_find_device", 2, mt_u64(ctx), nul_str("phy?junk", 3)));
+	CHECK(mt_raises("iio:EINVAL", "context_find_attr", 2, mt_u64(ctx), nul_str("num?", 3)));
+	CHECK(mt_raises("iio:EINVAL", "create_context", 2, mt_empty(), nul_str(fx.uri, strlen(fx.uri) - 1)));
+
+	/* The numeric locale of the process has a decimal comma. libiio reads the channel scales
+	 * of the XML with strtof and prints them with "%f": without the gateway's "C" guard the
+	 * scale 0.25 becomes 0 without any error and the XML says scale="0,250000". */
+	CHECK(voltage2_scaled(ctx));
+	CHECK(uselocale((locale_t)0) == LC_GLOBAL_LOCALE);
+	if (mt_comma_begin()) {
+		const char *const uris[2] = { fx.xml_uri, fx.uri };
+
+		xml = xml_of(ctx);                      /* made under "C", printed now */
+		CHECK(xml && strstr(xml, "scale=\"0.250000\"") != NULL);
+		CHECK(xml && strstr(xml, "scale=\"0,") == NULL);
+		free(xml);
+		for (int i = 0; i < 2; i++) {
+			uint64_t lc = mt_u64_of("create_context", 2, mt_empty(), mt_str(uris[i]));
+
+			CHECK(lc != 0);
+			CHECK(voltage2_scaled(lc));
+			xml = xml_of(lc);
+			CHECK(xml && strstr(xml, "scale=\"0.250000\"") != NULL);
+			CHECK(xml && strstr(xml, "scale=\"0,") == NULL);
+			free(xml);
+			mt_ok("context_destroy", 1, mt_u64(lc));
+		}
+		mt_comma_end();
+	}
 
 	/* allocation failures: the XML is parked; a list creates its result before it registers */
 	CHECK(mt_oom_sweep(1, "context_get_xml", 1, mt_u64(ctx)) >= 1);

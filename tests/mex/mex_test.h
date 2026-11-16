@@ -69,6 +69,24 @@ void mt_check_arities(const struct gw_group *g, const struct mt_arity *want, siz
  * iio_context_destroy; 0 on failure. Lets a group's test run without the context commands. */
 gw_id mt_open_context(const char *uri);
 
+/* ---- a process whose numeric locale has a decimal comma (MATLAB's may: the gateway must not care) ----
+ * mt_comma_locale(): the name of an installed locale whose decimal separator is ",", found with
+ * newlocale() and nl_langinfo_l(), which do not depend on the locale in force. NULL when there
+ * is none: that is a harness failure (exit status 1; a missing prerequisite fails, it does not
+ * skip), unless the environment variable IIO_TEST_NO_COMMA_LOCALE is "1": then one note is
+ * printed and the caller leaves its comma checks out. CI generates de_DE.UTF-8.
+ * mt_comma_begin(): false when there is no such locale. Else: the thread must be using the
+ * global locale (harness failure otherwise) and LC_NUMERIC of the process becomes that locale.
+ * mt_comma_end(): harness failure unless the thread still uses the global locale object (what
+ * uselocale((locale_t)0) reports: a command that switched the thread locale and did not switch
+ * back is caught here, whatever it switched to) and its decimal separator is still ",". Then
+ * LC_NUMERIC is "C" again. Call it after every block of commands started with mt_comma_begin().
+ * Between the two, objects are made with gateway commands only: mt_open_context and the dp_*
+ * builders call libiio without the gateway's guard and would get every channel scale wrong. */
+const char *mt_comma_locale(void);
+bool mt_comma_begin(void);
+void mt_comma_end(void);
+
 /* Ends main(): MATLAB exit, then no live handle, no live mx memory, nothing auto-freed. */
 #define MT_MAIN_RETURN() do { \
 	mock_exit_matlab(); \

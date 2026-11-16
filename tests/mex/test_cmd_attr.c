@@ -26,13 +26,19 @@ static const struct mt_arity arities[] = {
 	{ "attr_get_available", 1, 1, 1 },
 };
 
-/* ---- a backend whose only operation is read_attr: what emu cannot do with a read buffer ---- */
+/* ---- a backend with read_attr and write_attr only: what emu cannot do with a read buffer,
+ * and writes that fail or count differently ---- */
 enum probe_mode {
 	PROBE_EFBIG_THEN_FITS,   /* -EFBIG while the buffer is too small (the local backend's answer) */
 	PROBE_ALWAYS_EFBIG,      /* never fits, reported as -EFBIG */
 	PROBE_ALWAYS_FULL,       /* never fits, reported as "len bytes" (emu, context attributes, binary iiod) */
 	PROBE_EIO,               /* -EIO: an I/O error, and the legacy iiod's "buffer too small" */
+	PROBE_NO_NUL_SHORT,      /* 5 bytes; no NUL anywhere in the buffer */
+	PROBE_NO_NUL_ALMOST,     /* len - 1 bytes; no NUL anywhere in the buffer */
+	PROBE_NO_NUL_ZERO,       /* 0 bytes; no NUL anywhere in the buffer */
+	PROBE_HUGE_NEGATIVE,     /* a negative value that is 0 when narrowed to int */
 };
+#define PROBE_HUGE (-4294967296LL)
 #define PROBE_VALUE_LEN 40000u   /* characters of the value of PROBE_EFBIG_THEN_FITS */
 static enum probe_mode probe_mode;
 static size_t probe_lens[16];    /* buffer sizes of the read_attr calls since probe_calls was reset */
@@ -56,13 +62,43 @@ static ssize_t probe_read_attr(const struct iio_attr *attr, char *dst, size_t le
 	case PROBE_ALWAYS_FULL:
 		memset(dst, 'y', len);
 		return (ssize_t)len;
+	case PROBE_NO_NUL_SHORT:
+		memset(dst, 'z', len);
+		return 5;
+	case PROBE_NO_NUL_ALMOST:
+		memset(dst, 'z', len);
+		return (ssize_t)len - 1;
+	case PROBE_NO_NUL_ZERO:
+		memset(dst, 'z', len);
+		return 0;
+	case PROBE_HUGE_NEGATIVE:
+		return (ssize_t)PROBE_HUGE;
 	case PROBE_EIO:
 	default:
 		return -EIO;
 	}
 }
 
-static const struct iio_backend_ops probe_ops = { .read_attr = probe_read_attr };
+#define PROBE_WRITE_ALL 1                /* probe_write_ret: "every byte was written" */
+static long long probe_write_ret = PROBE_WRITE_ALL;   /* else: what write_attr returns */
+static unsigned int probe_writes;        /* write_attr calls */
+static char probe_written[64];           /* the first bytes of the last write */
+static size_t probe_written_len;         /* its length */
+
+static ssize_t probe_write_attr(const struct iio_attr *attr, const char *src, size_t len)
+{
+	(void)attr;
+	probe_writes++;
+	probe_written_len = len;
+	memset(probe_written, 0, sizeof(probe_written));
+	memcpy(probe_written, src, len < sizeof(probe_written) ? len : sizeof(probe_written));
+	return probe_write_ret == PROBE_WRITE_ALL ? (ssize_t)len : (ssize_t)probe_write_ret;
+}
+
+static const struct iio_backend_ops probe_ops = {
+	.read_attr = probe_read_attr,
+	.write_attr = probe_write_attr,
+};
 static const struct iio_backend probe_backend = {
 	.api_version = IIO_BACKEND_API_V1,
 	.name = "probe",
@@ -139,6 +175,31 @@ static const char *after_double(uint64_t a, double v, int exact)
 	else
 		mt_ok("attr_write_double", 3, mt_u64(a), mt_dbl(v), mt_bool(exact != 0));
 	return text_of(a);
+}
+
+/* the text with its character k (0-based) replaced by a NUL */
+static mxArray *nul_str(const char *text, size_t k)
+{
+	mxArray *a = mt_str(text);
+
+	((mxChar *)mxGetData(a))[k] = 0;
+	return a;
+}
+
+static mxArray *sgl(float v)
+{
+	mxArray *a = mxCreateNumericMatrix(1, 1, mxSINGLE_CLASS, mxREAL);
+
+	memcpy(mxGetData(a), &v, sizeof(v));
+	return a;
+}
+
+static mxArray *i32(int32_t v)
+{
+	mxArray *a = mxCreateNumericMatrix(1, 1, mxINT32_CLASS, mxREAL);
+
+	memcpy(mxGetData(a), &v, sizeof(v));
+	return a;
 }
 
 int main(int argc, char **argv)
@@ -246,6 +307,8 @@ int main(int argc, char **argv)
 	CHECK(mt_raises("iio:EINVAL", "attr_write_string", 2, mt_u64(text), mt_dbl(5)));
 	CHECK(mt_raises("iio:EINVAL", "attr_write_string", 2, mt_u64(text), mock_string_object()));
 	CHECK(mt_raises("iio:EINVAL", "attr_write_string", 2, mt_u64(text), mt_bytes("x", 1)));
+	CHECK(mt_raises("iio:EINVAL", "attr_write_string", 2, mt_u64(text), nul_str("ab?cd", 2)));
+	CHECK(strstr(mock_err_msg(), "embedded NUL") != NULL);
 	CHECK(!strcmp(text_of(text), "hello world"));
 	CHECK(mt_dbl_of("attr_write_string", 2, mt_u64(text), mt_str("")) == 1);
 	CHECK(mt_call(1, out, "attr_read_raw", 1, mt_u64(text)) == 0);
@@ -286,6 +349,11 @@ int main(int argc, char **argv)
 	CHECK(!strcmp(after_double(dbl, -0.5, -1), "-0.5"));
 	CHECK(!strcmp(after_double(dbl, 123456789.125, 1), "123456789.125"));
 	CHECK(!strcmp(after_double(dbl, 0.0, -1), "0"));
+	/* up to 40 decimals in fixed notation; a value that needs more is sent as "%.17g" */
+	CHECK(!strcmp(after_double(dbl, 1e-30, -1), "0.000000000000000000000000000001"));
+	CHECK(!strcmp(after_double(dbl, 1e-40, -1), "0.0000000000000000000000000000000000000001"));
+	CHECK(!strcmp(after_double(dbl, 1.5e-40, -1), "1.5000000000000001e-40"));
+	CHECK(!strcmp(after_double(dbl, 2.9999999999999996, -1), "2.9999999999999996"));   /* "%f": 3.000000 */
 	CHECK(!strcmp(after_double(dbl, 5e-324, -1), "4.9406564584124654e-324"));
 	CHECK(!strcmp(after_double(dbl, 1e-9, 0), "0.000000"));
 	CHECK(!strcmp(after_double(dbl, 5.0, 0), "5.000000"));
@@ -295,31 +363,46 @@ int main(int argc, char **argv)
 	CHECK(mt_raises("iio:EINVAL", "attr_write_double", 3, mt_u64(dbl), mt_dbl(NAN), mt_bool(false)));
 	CHECK(mt_raises("iio:EINVAL", "attr_write_double", 2, mt_u64(dbl), mt_str("1")));
 	CHECK(mt_raises("iio:EINVAL", "attr_write_double", 3, mt_u64(dbl), mt_dbl(1), mt_dbl(1)));
+	/* a floating-point class only: an integer class would be rounded to a double without notice */
+	CHECK(mt_raises("iio:EINVAL", "attr_write_double", 2, mt_u64(dbl), mt_i64(9007199254740993LL)));
+	CHECK(strstr(mock_err_msg(), "attr_write_longlong") != NULL);
+	CHECK(mt_raises("iio:EINVAL", "attr_write_double", 2, mt_u64(dbl), mt_u64(1)));
+	CHECK(mt_raises("iio:EINVAL", "attr_write_double", 2, mt_u64(dbl), i32(3)));
+	CHECK(mt_raises("iio:EINVAL", "attr_write_double", 3, mt_u64(dbl), i32(3), mt_bool(false)));
 	CHECK(!strcmp(text_of(dbl), "5.000000"));
+	mt_ok("attr_write_double", 2, mt_u64(dbl), sgl(0.5f));
+	CHECK(!strcmp(text_of(dbl), "0.5"));
 	mt_ok("attr_write_double", 3, mt_u64(dbl), mt_dbl(0.25), mt_empty());    /* [] = absent: exact */
 	CHECK(!strcmp(text_of(dbl), "0.25"));
 
-	/* the exact text does not depend on the numeric locale of the process (MATLAB's may have a
-	 * decimal comma), and the command leaves that locale as it found it. Needs one installed
-	 * locale with a decimal comma; without one this block checks nothing. */
-	{
-		static const char *const candidates[] = { "de_DE.UTF-8", "en_DK.UTF-8", "fr_FR.UTF-8",
-			"nl_NL.UTF-8", "es_ES.UTF-8", "it_IT.UTF-8", "pt_BR.UTF-8", "ru_RU.UTF-8" };
-		bool comma = false;
-
-		for (size_t i = 0; !comma && i < sizeof(candidates) / sizeof(candidates[0]); i++)
-			comma = setlocale(LC_NUMERIC, candidates[i]) && !strcmp(localeconv()->decimal_point, ",");
-		if (comma) {
-			mt_ok("attr_write_double", 2, mt_u64(dbl), mt_dbl(0.1));
-			CHECK(!strcmp(localeconv()->decimal_point, ","));
-			CHECK(!strcmp(text_of(dbl), "0.1"));
-			mt_ok("attr_write_double", 2, mt_u64(dbl), mt_dbl(-1234.5));
-			CHECK(!strcmp(text_of(dbl), "-1234.5"));
-		} else {
-			fprintf(stderr, "test_cmd_attr: no locale with a decimal comma: that check is skipped\n");
-		}
-		setlocale(LC_NUMERIC, "C");
+	/* The numeric locale of the process has a decimal comma (MATLAB's may). The texts sent
+	 * and the numbers read do not depend on it, and every command leaves the locale of the
+	 * thread and of the process as it found them (mt_comma_end checks both). */
+	CHECK(uselocale((locale_t)0) == LC_GLOBAL_LOCALE);
+	if (mt_comma_begin()) {
+		CHECK(!strcmp(after_double(dbl, 0.1, -1), "0.1"));
+		CHECK(uselocale((locale_t)0) == LC_GLOBAL_LOCALE);
+		CHECK(!strcmp(after_double(dbl, -1234.5, -1), "-1234.5"));
+		CHECK(mt_dbl_of("attr_read_double", 1, mt_u64(dbl)) == -1234.5);
+		CHECK(!strcmp(after_double(dbl, 1e-9, -1), "0.000000001"));
+		CHECK(!strcmp(after_double(dbl, 2.5, 0), "2.500000"));       /* libiio's own "%f" */
+		CHECK(mt_dbl_of("attr_read_double", 1, mt_u64(frac)) == 0.5);
+		/* libiio parses a range with sscanf("%lf"): without the "C" guard a range with a
+		 * fraction is iio:ENOTSUP here */
+		CHECK(range_is(frac_avail, 0, 0.25, 1));
+		CHECK(range_is(gain_avail, 0, 2, 70));
+		CHECK(mt_raises("iio:ENOTSUP", "attr_get_range", 1, mt_u64(calib_avail)));
+		/* emu checks a write against the attribute's "_available" range with sscanf too */
+		CHECK(!strcmp(after_double(frac, 0.75, -1), "0.75"));
+		CHECK(mt_dbl_of("attr_write_string", 2, mt_u64(frac), mt_str("0.25")) == 5);
+		CHECK(mt_dbl_of("attr_write_raw", 2, mt_u64(frac), mt_bytes("0.5", 4)) == 4);
+		CHECK(mt_raises("iio:EINVAL", "attr_write_string", 2, mt_u64(frac), mt_str("0.3")));
+		CHECK(mt_raises("iio:EINVAL", "attr_write_double", 2, mt_u64(frac), mt_dbl(1.25)));
+		CHECK(!strcmp(text_of(frac), "0.5"));
+		mt_comma_end();
 	}
+	CHECK(uselocale((locale_t)0) == LC_GLOBAL_LOCALE);
+	CHECK(!strcmp(after_double(dbl, 0.25, -1), "0.25"));
 
 	/* raw writes: the byte count is the numel of the input */
 	CHECK(mt_dbl_of("attr_write_raw", 2, mt_u64(text), mt_bytes("abcdef", 6)) == 6);
@@ -448,7 +531,70 @@ int main(int argc, char **argv)
 	CHECK(mt_raises("iio:EIO", "attr_read_raw", 1, mt_u64(pa)));
 	CHECK(probe_calls == 1 && probe_lens[0] == growth[0]);
 	CHECK(mt_raises("iio:EIO", "attr_read_longlong", 1, mt_u64(pa)));
-	CHECK(mt_raises("iio:ENOSYS", "attr_write_raw", 2, mt_u64(pa), mt_bytes("x", 1)));   /* no write_attr */
+	/* a read that returns fewer bytes than the buffer holds and no NUL: the text ends at the
+	 * count, wherever the backend left the rest of the buffer */
+	probe_mode = PROBE_NO_NUL_SHORT;
+	s = mt_str_of("attr_read_raw", 1, mt_u64(pa));
+	CHECK(s && !strcmp(s, "zzzzz"));
+	CHECK(mt_call(1, out, "attr_read_raw", 2, mt_u64(pa), mt_bool(true)) == 0);
+	CHECK(mxGetClassID(out[0]) == mxUINT8_CLASS && mxGetM(out[0]) == 1 && mxGetN(out[0]) == 5);
+	mxDestroyArray(out[0]);
+	probe_mode = PROBE_NO_NUL_ALMOST;
+	probe_calls = 0;
+	s = mt_str_of("attr_read_raw", 1, mt_u64(pa));
+	CHECK(s && strlen(s) == 32767 && s[0] == 'z' && s[32766] == 'z');
+	CHECK(probe_calls == 1);
+	probe_mode = PROBE_NO_NUL_ZERO;
+	CHECK(mt_call(1, out, "attr_read_raw", 1, mt_u64(pa)) == 0);
+	CHECK(mxIsChar(out[0]) && mxGetM(out[0]) == 0 && mxGetN(out[0]) == 0);
+	mxDestroyArray(out[0]);
+	CHECK(mt_call(1, out, "attr_read_raw", 2, mt_u64(pa), mt_bool(true)) == 0);
+	CHECK(mxGetClassID(out[0]) == mxUINT8_CLASS && mxGetM(out[0]) == 1 && mxGetN(out[0]) == 0);
+	mxDestroyArray(out[0]);
+	/* a negative value outside the errno range is an I/O error, not "success without a result" */
+	probe_mode = PROBE_HUGE_NEGATIVE;
+	CHECK(mt_raises("iio:EIO", "attr_read_raw", 1, mt_u64(pa)));
+	CHECK(mt_raises("iio:EIO", "attr_read_raw", 2, mt_u64(pa), mt_bool(true)));
+
+	/* writes: the bytes and the count the backend saw */
+	probe_writes = 0;
+	CHECK(mt_dbl_of("attr_write_raw", 2, mt_u64(pa), mt_bytes("ab\0def", 6)) == 6);
+	CHECK(probe_writes == 1 && probe_written_len == 6 && !memcmp(probe_written, "ab\0def", 6));
+	CHECK(mt_dbl_of("attr_write_string", 2, mt_u64(pa), mt_str("xyz")) == 4);
+	CHECK(probe_writes == 2 && probe_written_len == 4 && !memcmp(probe_written, "xyz", 4));
+	mt_ok("attr_write_double", 2, mt_u64(pa), mt_dbl(0.1));
+	CHECK(probe_writes == 3 && probe_written_len == 4 && !memcmp(probe_written, "0.1", 4));
+	mt_ok("attr_write_longlong", 2, mt_u64(pa), mt_i64(-7));
+	CHECK(probe_writes == 4 && !strcmp(probe_written, "-7"));
+	mt_ok("attr_write_bool", 2, mt_u64(pa), mt_bool(true));
+	CHECK(probe_writes == 5 && !strcmp(probe_written, "1"));
+	/* the count is the backend's, not the size of the input */
+	probe_write_ret = 2;
+	CHECK(mt_dbl_of("attr_write_raw", 2, mt_u64(pa), mt_bytes("abcdef", 6)) == 2);
+	CHECK(mt_dbl_of("attr_write_string", 2, mt_u64(pa), mt_str("abcdef")) == 2);
+	/* a write the backend refuses is an error of every write command */
+	probe_write_ret = -EBUSY;
+	probe_writes = 0;
+	CHECK(mt_raises("iio:EBUSY", "attr_write_raw", 2, mt_u64(pa), mt_bytes("x", 1)));
+	CHECK(mt_raises("iio:EBUSY", "attr_write_string", 2, mt_u64(pa), mt_str("x")));
+	CHECK(mt_raises("iio:EBUSY", "attr_write_bool", 2, mt_u64(pa), mt_bool(true)));
+	CHECK(mt_raises("iio:EBUSY", "attr_write_longlong", 2, mt_u64(pa), mt_dbl(1)));
+	CHECK(mt_raises("iio:EBUSY", "attr_write_double", 2, mt_u64(pa), mt_dbl(1)));
+	CHECK(mt_raises("iio:EBUSY", "attr_write_double", 3, mt_u64(pa), mt_dbl(1), mt_bool(false)));
+	CHECK(probe_writes == 6);
+	probe_write_ret = PROBE_HUGE;
+	CHECK(mt_raises("iio:EIO", "attr_write_raw", 2, mt_u64(pa), mt_bytes("x", 1)));
+	CHECK(mt_raises("iio:EIO", "attr_write_string", 2, mt_u64(pa), mt_str("x")));
+	CHECK(mt_raises("iio:EIO", "attr_write_double", 2, mt_u64(pa), mt_dbl(1)));
+	/* result first: when the allocation of the returned count fails, nothing was written yet,
+	 * so the one write of the sweep is the one of the attempt that succeeded */
+	probe_write_ret = PROBE_WRITE_ALL;
+	probe_writes = 0;
+	CHECK(mt_oom_sweep(1, "attr_write_raw", 2, mt_u64(pa), mt_bytes("abc", 3)) >= 1);
+	CHECK(probe_writes == 1);
+	probe_writes = 0;
+	CHECK(mt_oom_sweep(1, "attr_write_string", 2, mt_u64(pa), mt_str("abc")) >= 2);
+	CHECK(probe_writes == 1);
 	gw_handle_destroy(pctx);
 
 	mt_ok("mex_shutdown", 0);

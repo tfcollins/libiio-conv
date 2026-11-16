@@ -7,6 +7,8 @@
  * handler, whatever main() returned. */
 #include "mex_test.h"
 
+#include <langinfo.h>
+#include <locale.h>
 #include <stdarg.h>
 
 #define MT_MAX_ARGS 15
@@ -396,4 +398,60 @@ gw_id mt_open_context(const char *uri)
 	}
 	mt_ok("mex_handle_count", 0);    /* the gateway sees the handle and locks the MEX file */
 	return id;
+}
+
+const char *mt_comma_locale(void)
+{
+	static const char *const candidates[] = { "de_DE.UTF-8", "en_DK.UTF-8", "fr_FR.UTF-8",
+		"nl_NL.UTF-8", "es_ES.UTF-8", "it_IT.UTF-8", "pt_BR.UTF-8", "ru_RU.UTF-8" };
+	static const char *found;
+	static bool searched;
+	const char *opt_out = getenv("IIO_TEST_NO_COMMA_LOCALE");
+
+	if (searched)
+		return found;
+	searched = true;
+	for (size_t i = 0; !found && i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+		locale_t l = newlocale(LC_NUMERIC_MASK, candidates[i], (locale_t)0);
+
+		if (l == (locale_t)0)
+			continue;
+		if (!strcmp(nl_langinfo_l(RADIXCHAR, l), ","))
+			found = candidates[i];
+		freelocale(l);
+	}
+	if (found)
+		return found;
+	if (opt_out && !strcmp(opt_out, "1"))
+		fprintf(stderr, "mex_test: IIO_TEST_NO_COMMA_LOCALE=1 and no locale with a decimal comma: "
+			"the numeric-locale checks do not run\n");
+	else
+		harness_fail("mt_comma_locale", "no installed locale has a decimal comma (tried de_DE.UTF-8, "
+			"en_DK.UTF-8, ...): run `sudo locale-gen de_DE.UTF-8`, or set "
+			"IIO_TEST_NO_COMMA_LOCALE=1 to leave the numeric-locale checks out");
+	return NULL;
+}
+
+bool mt_comma_begin(void)
+{
+	const char *name = mt_comma_locale();
+
+	if (!name)
+		return false;
+	if (uselocale((locale_t)0) != LC_GLOBAL_LOCALE)
+		harness_fail("mt_comma_begin", "the thread does not use the global locale");
+	if (!setlocale(LC_NUMERIC, name) || strcmp(nl_langinfo(RADIXCHAR), ","))
+		harness_fail("mt_comma_begin", "setlocale(LC_NUMERIC, \"%s\") gave no decimal comma", name);
+	return true;
+}
+
+void mt_comma_end(void)
+{
+	if (uselocale((locale_t)0) != LC_GLOBAL_LOCALE) {
+		harness_fail("mt_comma_end", "a command left the thread in a locale of its own");
+		uselocale(LC_GLOBAL_LOCALE);
+	}
+	if (strcmp(nl_langinfo(RADIXCHAR), ","))
+		harness_fail("mt_comma_end", "the decimal separator of the process is no longer \",\"");
+	setlocale(LC_NUMERIC, "C");
 }

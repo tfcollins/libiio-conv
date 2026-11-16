@@ -6,6 +6,7 @@
  * MATLAB, when an allocation ends the call) releases it whatever happens next. */
 #include "mx_util.h"
 
+#include <langinfo.h>
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
@@ -202,11 +203,19 @@ int gw_arg_str(struct gw_call *c, int k, char **s)
 {
 	static const char what[] = "text (a char row vector)";
 	const mxArray *a = arg(c, k);
+	const mxChar *chars;
 
 	*s = NULL;
 	if (!a || !mxIsChar(a) || mxGetNumberOfDimensions(a) > 2 ||
 	    (mxGetM(a) != 1 && mxGetNumberOfElements(a) != 0))
 		return bad_arg(c, k, what);
+	chars = mxGetData(a);
+	for (size_t i = 0, n = chars ? mxGetNumberOfElements(a) : 0; i < n; i++) {
+		if (!chars[i])
+			return gw_fail(c, -EINVAL, "argument %d: text with an embedded NUL "
+				"(character %zu of %zu); binary data is written with attr_write_raw",
+				k + 1, i + 1, n);
+	}
 	*s = mxArrayToUTF8String(a);
 	if (!*s)
 		return bad_arg(c, k, what);
@@ -445,6 +454,12 @@ int gw_ret_double(struct gw_call *c, int k, double v)
 	return wanted(c, k) ? put(c, k, mxCreateDoubleScalar(v)) : 0;
 }
 
+void gw_set_double(struct gw_call *c, int k, double v)
+{
+	if (wanted(c, k) && c->plhs[k] && mxGetData(c->plhs[k]))
+		*(double *)mxGetData(c->plhs[k]) = v;
+}
+
 int gw_ret_doubles(struct gw_call *c, int k, const double *v, size_t n)
 {
 	return put_numeric(c, k, mxDOUBLE_CLASS, v, n, sizeof(*v));
@@ -463,4 +478,39 @@ int gw_ret_uint64(struct gw_call *c, int k, uint64_t v)
 int gw_ret_bytes(struct gw_call *c, int k, const void *p, size_t n)
 {
 	return put_numeric(c, k, mxUINT8_CLASS, p, n, 1);
+}
+
+/* ------------------------------------------------------------------ numeric locale */
+
+int gw_c_numeric_enter(struct gw_c_numeric *s)
+{
+	locale_t base, c_numeric;
+
+	s->c = s->old = (locale_t)0;
+	/* Only the decimal separator matters to strtod, sscanf("%lf") and "%f"; with a point in
+	 * force (MATLAB's usual state) nothing is switched and nothing is allocated. */
+	if (!strcmp(nl_langinfo(RADIXCHAR), "."))
+		return 0;
+	/* a copy of the thread's locale (of the global one when the thread has none of its own),
+	 * so only LC_NUMERIC changes; newlocale() consumes the copy when it succeeds */
+	base = duplocale(uselocale((locale_t)0));
+	if (base == (locale_t)0)
+		return -ENOMEM;
+	c_numeric = newlocale(LC_NUMERIC_MASK, "C", base);
+	if (c_numeric == (locale_t)0) {
+		freelocale(base);
+		return -ENOMEM;
+	}
+	s->c = c_numeric;
+	s->old = uselocale(c_numeric);
+	return 0;
+}
+
+void gw_c_numeric_leave(struct gw_c_numeric *s)
+{
+	if (s->c == (locale_t)0)
+		return;
+	uselocale(s->old);
+	freelocale(s->c);
+	s->c = s->old = (locale_t)0;
 }

@@ -3,13 +3,29 @@
 #include "mx_util.h"
 
 #include <limits.h>
-#include <locale.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #define READ_FIRST 32768u                   /* first buffer size */
 #define READ_LIMIT (16u * 1024u * 1024u)    /* no retry with a larger buffer from here on */
+
+/* The error of a negative ssize_t result of libiio. A backend's value outside the errno range
+ * (-4294967296 would be 0 as an int: "success" without a result) is an I/O error. */
+static int io_err(ssize_t v)
+{
+	return v < -4095 ? -EIO : (int)v;
+}
+
+/* gw_c_numeric_enter() with the error text. Every write is bracketed with it as well as the
+ * range parser: the emu backend checks a written value against the attribute's "_available"
+ * range with sscanf("%lf"), so under a decimal comma it refused 0.75 for a range [0 0.25 1]. */
+static int c_numeric(struct gw_call *c, struct gw_c_numeric *loc)
+{
+	int ret = gw_c_numeric_enter(loc);
+
+	return ret ? gw_fail(c, ret, "no \"C\" numeric locale") : 0;
+}
 
 static int attr_get_name(struct gw_call *c)
 {
@@ -37,8 +53,10 @@ static int attr_get_static_value(struct gw_call *c)
 }
 
 /* char = attr_read_raw(attr [, as_bytes = false]); with as_bytes: 1-by-N uint8.
- * char: the text up to the first NUL. Bytes: exactly the bytes libiio counted (device and
- * channel attributes include the terminating NUL, context attributes do not).
+ * char: the text up to the first NUL, read as UTF-8. Text that is not UTF-8 (a Latin-1 degree
+ * sign, binary data) is NOT preserved: MATLAB puts U+FFFD where a byte sequence is invalid.
+ * Bytes: exactly the bytes libiio counted (device and channel attributes include the
+ * terminating NUL, context attributes do not); this form is exact for any value.
  *
  * The buffer starts at READ_FIRST bytes and grows by four while libiio says the value did not
  * fit and the buffer is below READ_LIMIT. "Did not fit" is -EFBIG (local backend) or a return
@@ -77,7 +95,7 @@ static int attr_read_raw(struct gw_call *c)
 	}
 	if (got < 0) {
 		mxFree(buf);
-		return (int)got;
+		return io_err(got);
 	}
 	n = (size_t)got;
 	if (n >= len) {
@@ -94,11 +112,13 @@ static int attr_read_raw(struct gw_call *c)
 	return ret;
 }
 
-/* n = attr_write_raw(attr, uint8 vector): the bytes of the input as they are, no copy, no strlen */
+/* n = attr_write_raw(attr, uint8 vector): the bytes of the input as they are, no copy, no strlen.
+ * Result first: when the allocation of the count fails, nothing was written to the device. */
 static int attr_write_raw(struct gw_call *c)
 {
 	const struct iio_attr *attr;
 	const uint8_t *data;
+	struct gw_c_numeric loc;
 	ssize_t written;
 	size_t n;
 	int ret;
@@ -109,16 +129,25 @@ static int attr_write_raw(struct gw_call *c)
 	ret = gw_arg_bytes(c, 1, &data, &n);    /* never NULL, also when n is 0 */
 	if (ret)
 		return ret;
+	ret = gw_ret_double(c, 0, 0);
+	if (!ret)
+		ret = c_numeric(c, &loc);
+	if (ret)
+		return ret;
 	written = iio_attr_write_raw(attr, data, n);
+	gw_c_numeric_leave(&loc);
 	if (written < 0)
-		return (int)written;
-	return gw_ret_double(c, 0, (double)written);
+		return io_err(written);
+	gw_set_double(c, 0, (double)written);
+	return 0;
 }
 
-/* n = attr_write_string(attr, char): libiio sends the terminating NUL too and counts it */
+/* n = attr_write_string(attr, char): libiio sends the terminating NUL too and counts it.
+ * Result first, as attr_write_raw. Text with an embedded NUL is -EINVAL (gw_arg_str). */
 static int attr_write_string(struct gw_call *c)
 {
 	const struct iio_attr *attr;
+	struct gw_c_numeric loc;
 	ssize_t written;
 	char *s;
 	int ret;
@@ -129,11 +158,20 @@ static int attr_write_string(struct gw_call *c)
 	ret = gw_arg_str(c, 1, &s);
 	if (ret)
 		return ret;
+	ret = gw_ret_double(c, 0, 0);
+	if (!ret)
+		ret = c_numeric(c, &loc);
+	if (ret) {
+		mxFree(s);
+		return ret;
+	}
 	written = iio_attr_write_string(attr, s);
+	gw_c_numeric_leave(&loc);
 	mxFree(s);
 	if (written < 0)
-		return (int)written;
-	return gw_ret_double(c, 0, (double)written);
+		return io_err(written);
+	gw_set_double(c, 0, (double)written);
+	return 0;
 }
 
 static int attr_read_bool(struct gw_call *c)
@@ -179,6 +217,7 @@ static int attr_read_double(struct gw_call *c)
 static int attr_write_bool(struct gw_call *c)
 {
 	const struct iio_attr *attr;
+	struct gw_c_numeric loc;
 	bool v;
 	int ret;
 
@@ -186,9 +225,12 @@ static int attr_write_bool(struct gw_call *c)
 	if (ret)
 		return ret;
 	ret = gw_arg_bool(c, 1, &v);
+	if (!ret)
+		ret = c_numeric(c, &loc);
 	if (ret)
 		return ret;
 	ret = iio_attr_write_bool(attr, v);
+	gw_c_numeric_leave(&loc);
 	return ret < 0 ? ret : 0;
 }
 
@@ -196,6 +238,7 @@ static int attr_write_bool(struct gw_call *c)
 static int attr_write_longlong(struct gw_call *c)
 {
 	const struct iio_attr *attr;
+	struct gw_c_numeric loc;
 	long long v;
 	int ret;
 
@@ -203,41 +246,43 @@ static int attr_write_longlong(struct gw_call *c)
 	if (ret)
 		return ret;
 	ret = gw_arg_int(c, 1, LLONG_MIN, LLONG_MAX, &v);
+	if (!ret)
+		ret = c_numeric(c, &loc);
 	if (ret)
 		return ret;
 	ret = iio_attr_write_longlong(attr, v);
+	gw_c_numeric_leave(&loc);
 	return ret < 0 ? ret : 0;
 }
 
 /* The shortest fixed-notation text that strtod() reads back as v, at most 40 decimals; else
- * "%.17g". Fixed notation because the kernel's IIO fixed-point parser takes no exponent. The
- * numeric locale is "C" while the text is made, whatever MATLAB's is. v is finite. */
-static int exact_text(double v, char *text, size_t len)
+ * "%.17g". Fixed notation because the kernel's IIO fixed-point parser takes no exponent: a
+ * value that needs more than 40 decimals (1.5e-40; most values below about 1e-24) is
+ * sent with an exponent and a kernel driver is expected to refuse it. Every digit is sent and
+ * that parser truncates where libiio's "%f" rounds to six decimals: 2.9999999999999996 is
+ * "2.9999999999999996" here and "3.000000" with exact = false. The caller holds the "C" numeric
+ * locale (c_numeric), whatever MATLAB's is. v is finite. */
+static void exact_text(double v, char *text, size_t len)
 {
-	locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0), old;
 	int decimals;
 
-	if (c_locale == (locale_t)0)
-		return -ENOMEM;
-	old = uselocale(c_locale);
 	for (decimals = 0; decimals <= 40; decimals++) {
 		snprintf(text, len, "%.*f", decimals, v);
 		if (strtod(text, NULL) == v)
-			break;
+			return;
 	}
-	if (decimals > 40)
-		snprintf(text, len, "%.17g", v);
-	uselocale(old);
-	freelocale(c_locale);
-	return 0;
+	snprintf(text, len, "%.17g", v);
 }
 
 /* attr_write_double(attr, double [, exact = true]). exact: the text of exact_text() through
- * iio_attr_write_string. Not exact: iio_attr_write_double, which is libiio's "%f" (six decimals). */
+ * iio_attr_write_string. Not exact: iio_attr_write_double, which is libiio's "%f" (six decimals).
+ * The value is a double or a single: an integer class is -EINVAL, because int64(2^53 + 1) would
+ * become another number on the way through double (attr_write_longlong is exact). */
 static int attr_write_double(struct gw_call *c)
 {
 	const struct iio_attr *attr;
 	char text[512];             /* DBL_MAX with 40 decimals is 351 characters */
+	struct gw_c_numeric loc;
 	bool exact = true;
 	ssize_t written;
 	double v;
@@ -249,6 +294,9 @@ static int attr_write_double(struct gw_call *c)
 	ret = gw_arg_double(c, 1, &v);
 	if (ret)
 		return ret;
+	if (mxGetClassID(c->prhs[1]) != mxDOUBLE_CLASS && mxGetClassID(c->prhs[1]) != mxSINGLE_CLASS)
+		return gw_fail(c, -EINVAL, "argument 2: expected a double or single scalar, got %s; "
+			"integers are written with attr_write_longlong", mxGetClassName(c->prhs[1]));
 	if (gw_arg_given(c, 2)) {
 		ret = gw_arg_bool(c, 2, &exact);
 		if (ret)
@@ -256,28 +304,36 @@ static int attr_write_double(struct gw_call *c)
 	}
 	if (!isfinite(v))
 		return gw_fail(c, -EINVAL, "the value must be finite");
-	if (!exact) {
-		ret = iio_attr_write_double(attr, v);
-		return ret < 0 ? ret : 0;
-	}
-	ret = exact_text(v, text, sizeof(text));
+	ret = c_numeric(c, &loc);
 	if (ret)
-		return gw_fail(c, ret, "no \"C\" locale");
-	written = iio_attr_write_string(attr, text);
-	return written < 0 ? (int)written : 0;
+		return ret;
+	if (exact) {
+		exact_text(v, text, sizeof(text));
+		written = iio_attr_write_string(attr, text);
+		ret = written < 0 ? io_err(written) : 0;
+	} else {
+		ret = iio_attr_write_double(attr, v);
+	}
+	gw_c_numeric_leave(&loc);
+	return ret < 0 ? ret : 0;
 }
 
-/* [min step max] = attr_get_range(attr) */
+/* [min step max] = attr_get_range(attr). libiio parses the text with sscanf("%lf"). */
 static int attr_get_range(struct gw_call *c)
 {
 	const struct iio_attr *attr;
 	double v[3] = { 0, 0, 0 };
+	struct gw_c_numeric loc;
 	int ret;
 
 	ret = gw_arg_handle(c, 0, GW_T_ATTR, &attr, NULL);
 	if (ret)
 		return ret;
+	ret = c_numeric(c, &loc);
+	if (ret)
+		return ret;
 	ret = iio_attr_get_range(attr, &v[0], &v[1], &v[2]);
+	gw_c_numeric_leave(&loc);
 	return ret < 0 ? ret : gw_ret_doubles(c, 0, v, 3);
 }
 

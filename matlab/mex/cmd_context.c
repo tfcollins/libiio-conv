@@ -16,6 +16,7 @@ static int create_context(struct gw_call *c)
 	static const struct gw_ops ops = { NULL, context_destroy_op };
 	struct iio_context_params storage;
 	const struct iio_context_params *params;
+	struct gw_c_numeric loc;
 	struct iio_context *ctx;
 	char *uri = NULL;
 	gw_id id;
@@ -33,7 +34,14 @@ static int create_context(struct gw_call *c)
 		mxFree(uri);
 		return ret;
 	}
+	/* libiio reads the channel scales and offsets of the context's XML with strtof */
+	ret = gw_c_numeric_enter(&loc);
+	if (ret) {
+		mxFree(uri);
+		return gw_fail(c, ret, "no \"C\" numeric locale");
+	}
 	ctx = iio_create_context(params, uri);
+	gw_c_numeric_leave(&loc);
 	mxFree(uri);
 	ret = iio_err(ctx);            /* error-encoded, never NULL */
 	if (ret)
@@ -118,13 +126,18 @@ static void free_xml(void *p, size_t n)
 static int context_get_xml(struct gw_call *c)
 {
 	const struct iio_context *ctx;
+	struct gw_c_numeric loc;
 	char *xml;
 	int ret;
 
 	ret = gw_arg_handle(c, 0, GW_T_CONTEXT, &ctx, NULL);
 	if (ret)
 		return ret;
+	ret = gw_c_numeric_enter(&loc);        /* libiio prints the channel scales with "%f" */
+	if (ret)
+		return gw_fail(c, ret, "no \"C\" numeric locale");
 	xml = iio_context_get_xml(ctx);
+	gw_c_numeric_leave(&loc);
 	ret = iio_err(xml);            /* error-encoded, never NULL */
 	if (ret)
 		return ret;

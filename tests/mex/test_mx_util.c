@@ -3,7 +3,9 @@
  * that calls one helper and returns what it produced. */
 #include "mex_test.h"
 
+#include <langinfo.h>
 #include <limits.h>
+#include <locale.h>
 #include <math.h>
 
 /* ------------------------------------------------------------------ the local command group */
@@ -202,7 +204,7 @@ static int u_params(struct gw_call *c)
 
 enum {
 	R_STR_NULL, R_STR_EMPTY, R_STR_ABC, R_STR_UTF8, R_ID, R_ID_SET, R_IDS_0, R_IDS_3, R_INT64,
-	R_UINT64, R_TRUE, R_FALSE, R_DOUBLE, R_DOUBLES, R_DOUBLES_0, R_BYTES, R_BYTES_0, R_STRS,
+	R_UINT64, R_TRUE, R_FALSE, R_DOUBLE, R_DOUBLE_SET, R_DOUBLES, R_DOUBLES_0, R_BYTES, R_BYTES_0, R_STRS,
 	R_STRS_0, R_EMPTY, R_TWICE, R_COUNT
 };
 
@@ -244,6 +246,10 @@ static int u_ret(struct gw_call *c)
 	case R_TRUE:      return gw_ret_bool(c, k, true);
 	case R_FALSE:     return gw_ret_bool(c, k, false);
 	case R_DOUBLE:    return gw_ret_double(c, k, 2.5);
+	case R_DOUBLE_SET:
+		ret = gw_ret_double(c, k, 0);
+		gw_set_double(c, k, -7.25);
+		return ret;
 	case R_DOUBLES:   return gw_ret_doubles(c, k, dbl, 3);
 	case R_DOUBLES_0: return gw_ret_doubles(c, k, NULL, 0);
 	case R_BYTES:     return gw_ret_bytes(c, k, "a\0b", 3);
@@ -593,11 +599,18 @@ static void test_str(void)
 	CHECK(mt_raises("iio:EINVAL", "u_str", 1, mock_string_object()));
 	CHECK(msg_has("string"));
 	CHECK(mt_raises("iio:EINVAL", "u_str", 0));
-	/* text with an embedded NUL ends there, as a C string does */
+	/* text with an embedded NUL is refused: C would cut it there without notice */
 	a = mxCreateString("a?b");
 	memcpy(mxGetData(a), nul_text, sizeof(nul_text));
-	s = mt_str_of("u_str", 1, a);
-	CHECK(s && !strcmp(s, "a"));
+	CHECK(mt_raises("iio:EINVAL", "u_str", 1, a));
+	CHECK(msg_has("u_str: argument 1: text with an embedded NUL (character 2 of 3)"));
+	a = mxCreateString("a?b");
+	memcpy(mxGetData(a), nul_text, sizeof(nul_text));
+	CHECK(mt_raises("iio:EINVAL", "u_str0", 1, a));
+	a = mxCreateString("?");
+	memcpy(mxGetData(a), &nul_text[1], sizeof(nul_text[1]));
+	CHECK(mt_raises("iio:EINVAL", "u_str", 1, a));
+	CHECK(msg_has("(character 1 of 1)"));
 
 	/* text that is not a row: a column, a matrix, N-D. Any 2-D empty char is '' */
 	CHECK(mt_raises("iio:EINVAL", "u_str", 1, mock_char_array(3, 1, 1, "abc")));
@@ -926,6 +939,18 @@ static void test_results(void)
 	a = ret(R_DOUBLE);
 	CHECK(is_class(a, mxDOUBLE_CLASS, 1, 1) && mxGetScalar(a) == 2.5);
 	mxDestroyArray(a);
+	a = ret(R_DOUBLE_SET);          /* gw_ret_double(0), then gw_set_double */
+	CHECK(is_class(a, mxDOUBLE_CLASS, 1, 1) && mxGetScalar(a) == -7.25);
+	mxDestroyArray(a);
+	/* on an output that was not requested gw_set_double does nothing (output 0 stays 7) */
+	CHECK(mt_call(1, out, "u_ret", 2, mt_dbl(R_DOUBLE_SET), mt_dbl(1)) == 0);
+	CHECK(is_class(out[0], mxDOUBLE_CLASS, 1, 1) && mxGetScalar(out[0]) == 7);
+	mxDestroyArray(out[0]);
+	CHECK(mt_call(2, out, "u_ret", 2, mt_dbl(R_DOUBLE_SET), mt_dbl(1)) == 0);
+	CHECK(is_class(out[1], mxDOUBLE_CLASS, 1, 1) && mxGetScalar(out[1]) == -7.25);
+	mxDestroyArray(out[0]);
+	mxDestroyArray(out[1]);
+	out[0] = out[1] = NULL;
 	a = ret(R_DOUBLES);
 	CHECK(is_class(a, mxDOUBLE_CLASS, 1, 3));
 	CHECK(a && !memcmp(mxGetData(a), (const double[3]){ 1, 2, 3 }, 24));
@@ -992,6 +1017,67 @@ static void test_results(void)
 	CHECK(mock_autofreed() == 0);
 }
 
+/* gw_c_numeric_enter / _leave: LC_NUMERIC "C" for the thread in between, every other category
+ * untouched, and exactly the locale object of before afterwards */
+static void test_c_numeric(void)
+{
+	struct gw_c_numeric loc, failed = { (locale_t)0, (locale_t)0 };
+	char text[32], codeset[64];
+	locale_t own;
+
+	/* the "C" process: the decimal separator is a point already, so nothing is switched */
+	CHECK(gw_c_numeric_enter(&loc) == 0);
+	CHECK(uselocale((locale_t)0) == LC_GLOBAL_LOCALE);
+	CHECK(loc.c == (locale_t)0);
+	CHECK(strtod("0.25", NULL) == 0.25);
+	gw_c_numeric_leave(&loc);
+	CHECK(uselocale((locale_t)0) == LC_GLOBAL_LOCALE);
+	gw_c_numeric_leave(&loc);              /* a second leave, and a leave after a failed enter: nothing */
+	gw_c_numeric_leave(&failed);
+	CHECK(uselocale((locale_t)0) == LC_GLOBAL_LOCALE);
+
+	/* the global locale has a decimal comma (setlocale, as an application does it) */
+	if (mt_comma_begin()) {
+		snprintf(text, sizeof(text), "%.2f", 0.25);
+		CHECK(!strcmp(text, "0,25"));
+		CHECK(strtod("0.25", NULL) == 0);
+		CHECK(gw_c_numeric_enter(&loc) == 0);
+		CHECK(uselocale((locale_t)0) != LC_GLOBAL_LOCALE);
+		snprintf(text, sizeof(text), "%.2f", 0.25);
+		CHECK(!strcmp(text, "0.25"));
+		CHECK(strtod("0.25", NULL) == 0.25);
+		CHECK(strtof("-100.5", NULL) == -100.5f);
+		gw_c_numeric_leave(&loc);
+		CHECK(uselocale((locale_t)0) == LC_GLOBAL_LOCALE);
+		snprintf(text, sizeof(text), "%.2f", 0.25);
+		CHECK(!strcmp(text, "0,25"));
+		mt_comma_end();
+	}
+
+	/* the thread has a locale of its own (uselocale): the same, and the other categories of
+	 * that locale stay in force in between (the character set is one of them) */
+	if (mt_comma_locale()) {
+		own = newlocale(LC_ALL_MASK, mt_comma_locale(), (locale_t)0);
+		CHECK(own != (locale_t)0);
+		if (own != (locale_t)0) {
+			uselocale(own);
+			snprintf(codeset, sizeof(codeset), "%s", nl_langinfo(CODESET));
+			CHECK(!strcmp(codeset, "UTF-8"));
+			CHECK(gw_c_numeric_enter(&loc) == 0);
+			CHECK(uselocale((locale_t)0) != own);
+			CHECK(!strcmp(nl_langinfo(CODESET), codeset));
+			CHECK(!strcmp(nl_langinfo(RADIXCHAR), "."));
+			snprintf(text, sizeof(text), "%.1f", 1234.5);
+			CHECK(!strcmp(text, "1234.5"));
+			gw_c_numeric_leave(&loc);
+			CHECK(uselocale((locale_t)0) == own);
+			CHECK(!strcmp(nl_langinfo(RADIXCHAR), ","));
+			uselocale(LC_GLOBAL_LOCALE);
+			freelocale(own);
+		}
+	}
+}
+
 int main(void)
 {
 	test_errno_names();
@@ -1005,6 +1091,7 @@ int main(void)
 	test_bytes();
 	test_params();
 	test_results();
+	test_c_numeric();
 	CHECK(mock_warn_count() == 0);
 	MT_MAIN_RETURN();
 }

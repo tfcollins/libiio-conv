@@ -144,6 +144,14 @@ int main(int argc, char **argv)
 	CHECK(in0 != 0 && out0 != 0 && in0 != out0);
 	CHECK(gw_handle_type(in0) == GW_T_CHANNEL && gw_handle_parent(in0) == ctx && !gw_handle_owned(in0));
 	CHECK(gw_handle_type(out0) == GW_T_CHANNEL && gw_handle_parent(out0) == ctx);
+	{       /* text with an embedded NUL is refused, not cut to "voltage0" or "calib_mode" */
+		mxArray *name = mt_str("voltage0?x"), *attr_name = mt_str("calib_mode?");
+
+		((mxChar *)mxGetData(name))[8] = 0;
+		((mxChar *)mxGetData(attr_name))[10] = 0;
+		CHECK(mt_raises("iio:EINVAL", "device_find_channel", 3, mt_u64(phy), name, mt_bool(false)));
+		CHECK(mt_raises("iio:EINVAL", "device_find_attr", 2, mt_u64(phy), attr_name));
+	}
 	CHECK(mt_u64_of("device_find_channel", 3, mt_u64(phy), mt_str("RX1"), mt_bool(false)) == in0);
 	CHECK(mt_u64_of("device_find_channel", 3, mt_u64(phy), mt_str("rx1-port"), mt_bool(false)) == in0);
 	CHECK(mt_u64_of("device_find_channel", 3, mt_u64(phy), mt_str("TX1"), mt_bool(true)) == out0);

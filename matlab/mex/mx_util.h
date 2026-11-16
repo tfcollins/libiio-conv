@@ -5,6 +5,8 @@
 
 #include "iio_mex.h"
 
+#include <locale.h>
+
 /* "EINVAL" for -22 or 22; NULL for 0 and for numbers without a name. 95 is "ENOTSUP", 11 "EAGAIN". */
 const char *gw_errno_name(int err);
 
@@ -19,7 +21,8 @@ int gw_arg_handle0(struct gw_call *c, int k, enum gw_type type, void *ptr, gw_id
 /* Destructor argument: zero or stale id: nothing. Live owned id of that type: gw_handle_destroy().
  * Live borrowed id of that type: nothing. Live id of another type: -EBADF. */
 int gw_arg_destroy(struct gw_call *c, int k, enum gw_type type);
-/* char row vector or empty char -> UTF-8 copy from mxMalloc; the caller mxFree()s it. */
+/* char row vector or empty char -> UTF-8 copy from mxMalloc; the caller mxFree()s it.
+ * Text with an embedded NUL is -EINVAL (C would cut it there without notice). */
 int gw_arg_str(struct gw_call *c, int k, char **s);
 int gw_arg_str0(struct gw_call *c, int k, char **s); /* absent or [] -> *s = NULL */
 int gw_arg_bool(struct gw_call *c, int k, bool *v);  /* logical scalar */
@@ -49,6 +52,10 @@ int gw_ret_str(struct gw_call *c, int k, const char *s);       /* NULL -> []; el
 int gw_ret_strs(struct gw_call *c, int k, char *const *list, size_t n);   /* 1-by-n cell of char rows */
 int gw_ret_bool(struct gw_call *c, int k, bool v);
 int gw_ret_double(struct gw_call *c, int k, double v);
+/* Overwrites the double scalar that gw_ret_double() put in plhs[k]; never fails; nothing when k > 0
+ * and k >= nlhs. "Result first" for a command that writes to the device and returns a count:
+ * gw_ret_double(c, 0, 0), the write, gw_set_double(c, 0, count). */
+void gw_set_double(struct gw_call *c, int k, double v);
 int gw_ret_doubles(struct gw_call *c, int k, const double *v, size_t n);  /* 1-by-n double */
 int gw_ret_int64(struct gw_call *c, int k, int64_t v);         /* int64 scalar */
 int gw_ret_uint64(struct gw_call *c, int k, uint64_t v);       /* uint64 scalar */
@@ -60,6 +67,24 @@ int gw_ret_bytes(struct gw_call *c, int k, const void *p, size_t n);      /* 1-b
  * call or in the at-exit function. The command never frees p itself. Up to 4 pointers per call.
  * Returns 0, or -ENOMEM after calling free_fn(p, n) at once when the four slots are taken. */
 int gw_park(void *p, size_t n, void (*free_fn)(void *p, size_t n));
+
+/* ---- numeric locale ----
+ * libiio parses and prints some doubles with the plain C functions (strtof, sscanf "%lf",
+ * "%f"), which follow LC_NUMERIC: under a locale with a decimal comma every channel scale of a
+ * context made from XML is cut at the point, the XML text is written with commas and a
+ * fractional range is not parsed. A command brackets such a libiio call with this pair:
+ *     struct gw_c_numeric loc;
+ *     ret = gw_c_numeric_enter(&loc);        (0, or -ENOMEM: nothing to leave)
+ *     ... the libiio call ...
+ *     gw_c_numeric_leave(&loc);
+ * Between the two the decimal separator of the calling thread is a point: when it is not one
+ * already, the thread's LC_NUMERIC is "C" and every other category is what it was. Leave
+ * restores the thread's locale object exactly. No mx* call and no return between
+ * them: an mx allocation that fails ends the call non-locally and would leave the thread in
+ * the temporary locale. Which calls: "Conventions / Gateway (C)", "Numeric locale". */
+struct gw_c_numeric { locale_t c, old; };
+int gw_c_numeric_enter(struct gw_c_numeric *s);
+void gw_c_numeric_leave(struct gw_c_numeric *s);     /* nothing after a failed enter or a leave */
 
 /* ---- enum names: tables generated from iio.h at build time by matlab/tools/gen_enums.py ---- */
 enum gw_enum {
