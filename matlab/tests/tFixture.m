@@ -7,7 +7,7 @@ classdef tFixture < IioTestCase
             tc.verifyClass(w, 'uint16');
             tc.verifySize(w, [1 8192]);
             tc.verifyEqual(w(1:4), uint16([2048 2047 6145 2046]));
-            tc.verifyEqual(w(65:66), uint16([2064 6127]));       % W(32), W(33) = 0810 17ef
+            tc.verifyEqual(w(33:34), uint16([2064 6127]));       % W(32), W(33) = 0810 17ef
             tc.verifyEqual(w(end-1:end), uint16([63487 63488]));
             tc.verifyEqual(sum(double(w)), 268431360);
             w = EmuFixture.rampWords(4097);
