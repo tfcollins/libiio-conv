@@ -1006,6 +1006,11 @@ static void test_backend_misc(void)
 		CHECK(ev.id == UINT64_C(0x0102010300000000) && ev.timestamp == 1001);
 		CHECK(iio_event_stream_read(es, &ev, true) == -EBUSY);
 		CHECK(iio_event_stream_read(es, &ev, false) == -ETIMEDOUT);
+		CHECK(!strcmp(fake.log, "nnnb"));       /* each read, with its nonblock flag */
+		fake.ev_none = EAGAIN;                  /* "no event" as another backend says it */
+		CHECK(iio_event_stream_read(es, &ev, true) == -EAGAIN);
+		CHECK(iio_event_stream_read(es, &ev, false) == -EAGAIN);
+		fake.ev_none = 0;
 		iio_event_stream_destroy(es);
 	}
 
@@ -1021,7 +1026,7 @@ static void test_backend_misc(void)
 	CHECK(iio_err(bad) == -EINVAL);
 	if (!iio_err(bad))
 		iio_context_destroy(bad);
-	CHECK(!strcmp(fake.log, ""));
+	CHECK(!strcmp(fake.log, "nnnbnb"));     /* nothing but the event reads reached the backend */
 	reset();
 }
 

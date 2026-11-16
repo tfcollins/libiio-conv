@@ -24,7 +24,9 @@
  *   free_block     F
  *   close_buffer   C
  *   open_ev              only for device iio:device2, else -ENODEV
- *   read_ev              two events, then -EBUSY if nonblock, else -ETIMEDOUT
+ *   read_ev        n, b  n when nonblock, b when the read may wait. Two events,
+ *                        then "no event": -fake.ev_none, or when that is 0
+ *                        -EBUSY if nonblock, else -ETIMEDOUT
  *   get_trigger          fake.trigger, or -ENODEV when it is NULL
  *   set_trigger          stores it
  *   read_attr            writes "fake:<attribute name>", returns its length + 1
@@ -62,6 +64,9 @@ struct fake_state {
 	unsigned char tx_data[256];
 	size_t tx_bytes;
 	bool tx_cyclic;
+	int ev_none;          /* errno (positive) read_ev reports when there is no event; default 0:
+	                       * EBUSY if nonblock, else ETIMEDOUT. The local and the network
+	                       * backend answer a non-blocking read with -EAGAIN. */
 	const struct iio_device *trigger;
 	int timeout;          /* last value the set_timeout operation received; default FAKE_NO_TIMEOUT */
 	/* malloc copy of the bytes write_attr received last; default NULL, 0 */
@@ -228,6 +233,9 @@ static int fake_read_ev(struct iio_event_stream_pdata *pdata, struct iio_event *
 		UINT64_C(0x0001000000000000), UINT64_C(0x0102010300000000),
 	};
 
+	fake_log(nonblock ? 'n' : 'b');
+	if (pdata->nb_read >= 2 && fake.ev_none)
+		return -fake.ev_none;
 	if (pdata->nb_read >= 2)
 		return nonblock ? -EBUSY : -ETIMEDOUT;
 	out_event->id = ids[pdata->nb_read];

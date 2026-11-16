@@ -852,6 +852,20 @@ static void test_tx_buffer_choice(void)
 	close_cs(cs);
 	CHECK(open_raises("iio:EINVAL", multi, cells(2, "voltage0", "voltage1"), opts(3, "output", mt_bool(true),
 		"samples", mt_dbl(2), "buffer", mt_dbl(0))));
+
+	/* the automatic choice looks at the scan elements: altvoltage0 of emu-tx is in no buffer.
+	 * Refused by the choice itself, before a buffer is registered. */
+	{
+		size_t before = gw_handle_count();
+
+		CHECK(open_raises("iio:EINVAL", tx, cells(1, "altvoltage0"), opts(3, "output", mt_bool(true),
+			"samples", mt_dbl(2), "nb_blocks", mt_dbl(1))));
+		CHECK(strstr(mock_err_msg(), "holds every channel") != NULL);
+		CHECK(open_raises("iio:EINVAL", tx, cells(2, "voltage0_i", "altvoltage0"), opts(3, "output", mt_bool(true),
+			"samples", mt_dbl(2), "nb_blocks", mt_dbl(1))));
+		CHECK(strstr(mock_err_msg(), "holds every channel") != NULL);
+		CHECK(gw_handle_count() == before);
+	}
 }
 
 /* a receive and a transmit stream at once on one context */
@@ -914,7 +928,7 @@ static void test_comma_locale(void)
 static void test_rx_no_frame(void)
 {
 	static const int16_t first[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
-	static const unsigned char zero[16];
+	static const unsigned char zero[16], zero32[32];
 	uint64_t f, frx, cs;
 	double t0, dt;
 	bool valid;
@@ -999,6 +1013,28 @@ static void test_rx_no_frame(void)
 		mxDestroyArray(a);
 	}
 	CHECK(fake.timeout == FAKE_NO_TIMEOUT);    /* the context timeout was never touched */
+	close_cs(cs);
+
+	/* every byte of a frame that did not come is zero, whatever the class: single and int8,
+	 * complex (the mock fills an uninitialised array with 0xA5) */
+	fake.rx_frames = 0;
+	cs = open_cs(frx, iq0(), opts(5, RX(4), CLASS("single"), CPLX, "timeout_ms", mt_dbl(0)));
+	a = rd(cs, &valid);
+	CHECK(a != NULL && !valid);
+	CHECK(is(a, 4, 1, mxSINGLE_CLASS, true));
+	if (a) {
+		CHECK(!memcmp(mxGetData(a), zero32, 32));
+		mxDestroyArray(a);
+	}
+	close_cs(cs);
+	cs = open_cs(frx, iq0(), opts(5, RX(4), CLASS("int8"), CPLX, "timeout_ms", mt_dbl(0)));
+	a = rd(cs, &valid);
+	CHECK(a != NULL && !valid);
+	CHECK(is(a, 4, 1, mxINT8_CLASS, true));
+	if (a) {
+		CHECK(!memcmp(mxGetData(a), zero32, 8));
+		mxDestroyArray(a);
+	}
 	gw_handle_destroy(f);
 }
 
@@ -1101,6 +1137,42 @@ static void test_unload_tx_infinite(void)
 	close_cs(t);
 	CHECK(now_s() - t0 < 0.5);
 	CHECK(!strcmp(fake.log, "DDXsFFXC"));
+	gw_handle_destroy(f);
+
+	/* the bounded poll is for that one case only. A finite context timeout: the close asks
+	 * once per frame in flight, with a dequeue that may wait (the fake answers at once) */
+	f = dp_open_fake(fake_xml);
+	c = gw_handle_ptr(f, GW_T_CONTEXT);
+	CHECK(iio_context_set_timeout(c, 250) == 0);
+	CHECK(iio_context_get_params(c)->timeout_ms == 250);
+	fake.tx_frames = 0;
+	t = open_cs(dp_dev(f, "emu-tx"), iq0(), opts(4, "output", mt_bool(true), "samples", mt_dbl(4),
+		"nb_blocks", mt_dbl(2), CPLX));
+	CHECK(wr(t, frame_a()) == true);
+	CHECK(wr(t, frame_a()) == true);
+	fake_clear_log();
+	t0 = now_s();
+	close_cs(t);
+	CHECK(now_s() - t0 < 0.5);
+	CHECK(count_in(fake.log, 'd') <= 4 && count_in(fake.log, 'D') == 0);
+	if (count_in(fake.log, 'd') > 4)
+		fprintf(stderr, "fake log (close, finite context timeout): %s\n", fake.log);
+	gw_handle_destroy(f);
+
+	/* a stream that never waits (timeout_ms 0) on a context without timeout: no poll either */
+	f = dp_open_fake(fake_xml);
+	c = gw_handle_ptr(f, GW_T_CONTEXT);
+	CHECK(iio_context_set_timeout(c, -1) == 0);
+	fake.tx_frames = 0;
+	t = open_cs(dp_dev(f, "emu-tx"), iq0(), opts(5, "output", mt_bool(true), "samples", mt_dbl(4),
+		"nb_blocks", mt_dbl(2), CPLX, "timeout_ms", mt_dbl(0)));
+	CHECK(wr(t, frame_a()) == true);
+	CHECK(wr(t, frame_a()) == true);
+	fake_clear_log();
+	t0 = now_s();
+	close_cs(t);
+	CHECK(now_s() - t0 < 0.5);
+	CHECK(count_in(fake.log, 'd') <= 4 && count_in(fake.log, 'D') == 0);
 	gw_handle_destroy(f);
 }
 

@@ -144,6 +144,17 @@ static void test_emu_rx(const struct mt_fixture *fx)
 	CHECK(id[0] != id[1] && id[0] != id[2] && id[1] != id[2]);
 	CHECK(id[3] == id[0] && id[4] == id[1]);
 
+	/* the other flag bits of a view survive the moves: on the block that becomes the caller's
+	 * (c, the sixth) and on one that goes back to the queue (c again, when a is handed out) */
+	gw_handle_set_flags(id[2], gw_handle_flags(id[2]) | BLK_CPU_OFF);
+	CHECK(mt_u64_of("stream_get_next_block", 1, mt_u64(st)) == id[2]);
+	CHECK(gw_handle_flags(id[2]) == BLK_CPU_OFF);
+	CHECK(mt_u64_of("stream_get_next_block", 1, mt_u64(st)) == id[0]);
+	CHECK(gw_handle_flags(id[2]) == (BLK_CPU_OFF | BLK_ENQUEUED));
+	CHECK(gw_handle_flags(id[0]) == 0 && gw_handle_flags(id[1]) == BLK_ENQUEUED);
+	gw_handle_set_flags(id[2], BLK_ENQUEUED);
+	CHECK(gw_handle_count() == count + 5);
+
 	/* the stream's buffer stream is a view too */
 	blk = gw_handle_ptr(id[0], GW_T_BLOCK);
 	CHECK(blk != NULL);
@@ -293,6 +304,8 @@ static void test_fake(const struct mt_fixture *fx)
 	a = mt_u64_of("stream_get_next_block", 1, mt_u64(st));
 	CHECK(a != 0 && !(gw_handle_flags(a) & BLK_ENQUEUED));
 	CHECK(!strcmp(fake.log, "OBESD"));
+	mt_ok("stream_cancel", 1, mt_u64(st));          /* reaches the backend */
+	CHECK(!strcmp(fake.log, "OBESDX"));
 	n = gw_handle_count();
 	CHECK(mt_raises("iio:ETIMEDOUT", "stream_get_next_block", 1, mt_u64(st)));
 	CHECK(gw_handle_count() == n);
@@ -302,8 +315,8 @@ static void test_fake(const struct mt_fixture *fx)
 	mt_ok("stream_destroy", 1, mt_u64(st));
 	CHECK(now_s() - t0 < 1.0);
 	/* an input stream is cancelled first, stopped before it is closed */
-	CHECK(!strcmp(fake.log, "OBESDEdXdFsXC"));
-	if (strcmp(fake.log, "OBESDEdXdFsXC"))
+	CHECK(!strcmp(fake.log, "OBESDXEdXdFsXC"));
+	if (strcmp(fake.log, "OBESDXEdXdFsXC"))
 		fprintf(stderr, "fake log (rx): %s\n", fake.log);
 	gw_handle_destroy(ctx);
 

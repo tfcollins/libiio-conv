@@ -81,6 +81,10 @@ static const struct row rows[] = {
 	{ UINT64_C(0x0000000000000007), "IIO_EV_TYPE_THRESH", 0, "IIO_EV_DIR_EITHER", 0, NULL, NULL },
 	/* differential, altvoltage 0 against altvoltage 1 */
 	{ UINT64_C(0x0080000f00010000), "IIO_EV_TYPE_THRESH", 0, "IIO_EV_DIR_EITHER", 0, "altvoltage0", "altvoltage1" },
+	/* acceleration with modifier Y: the last channel, accel_x, has the type but not the modifier */
+	{ UINT64_C(0x0000020300000000), "IIO_EV_TYPE_THRESH", 0, "IIO_EV_DIR_EITHER", 0, NULL, NULL },
+	/* voltage with modifier X: accel_x has the modifier and the number but not the type */
+	{ UINT64_C(0x0000010000000000), "IIO_EV_TYPE_THRESH", 0, "IIO_EV_DIR_EITHER", 0, NULL, NULL },
 	/* type 200 has no name */
 	{ UINT64_C(0xC800000000000000), "UNKNOWN", 200, "IIO_EV_DIR_EITHER", 0, "voltage0", NULL },
 };
@@ -257,8 +261,24 @@ static void test_fake(const struct mt_fixture *fx)
 	CHECK(es != 0);
 	CHECK(read_is(es, true, true, UINT64_C(0x0001000000000000), 1000));
 	CHECK(read_is(es, true, true, UINT64_C(0x0102010300000000), 1001));
+	fake_clear_log();
 	CHECK(read_is(es, true, false, 0, 0));          /* the fake's -EBUSY */
+	CHECK(!strcmp(fake.log, "n"));                  /* nonblock reaches the backend as given: */
 	CHECK(read_is(es, false, false, 0, 0));         /* the fake's -ETIMEDOUT */
+	CHECK(!strcmp(fake.log, "nb"));                 /* a read that must not wait, one that may */
+	/* "no event" as the real backends say it: -EAGAIN (local and network, non-blocking) and
+	 * -EBUSY; any other error is raised, with the three results still unset */
+	fake.ev_none = EAGAIN;
+	CHECK(read_is(es, true, false, 0, 0));
+	CHECK(read_is(es, false, false, 0, 0));
+	fake.ev_none = EBUSY;
+	CHECK(read_is(es, false, false, 0, 0));
+	fake.ev_none = ETIMEDOUT;
+	CHECK(read_is(es, true, false, 0, 0));
+	fake.ev_none = EIO;
+	CHECK(mt_raises("iio:EIO", "event_stream_read", 2, mt_u64(es), mt_bool(true)));
+	fake.ev_none = 0;
+	CHECK(!strcmp(fake.log, "nbnbbnn"));
 	/* fewer outputs */
 	CHECK(mt_bool_of("event_stream_read", 2, mt_u64(es), mt_bool(true)) == false);
 	mt_ok("event_stream_read", 2, mt_u64(es), mt_bool(true));

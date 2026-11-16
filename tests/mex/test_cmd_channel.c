@@ -503,6 +503,18 @@ int main(int argc, char **argv)
 	CHECK(gw_handle_type(view) == GW_T_MASK);
 	CHECK(mask_is(view, 5, 0x02));
 	gw_handle_destroy(bs);
+	{       /* the order of the checks: "read-only" (EPERM) before "not a scan element" (EINVAL) */
+		uint64_t tmask = dp_mask(tx, true, 1, "voltage0_i");
+		uint64_t tbs = dp_bufstream(dp_buf(tx, 0), tmask), tview = 0;
+		struct iio_buffer_stream *ts = gw_handle_ptr(tbs, GW_T_BUFFER_STREAM);
+
+		CHECK(ts && gw_handle_borrow(GW_T_MASK, iio_buffer_stream_get_channels_mask(ts), tbs, &tview) == 0);
+		CHECK(mt_raises("iio:EPERM", "channel_enable", 2, mt_u64(tx_alt), mt_u64(tview)));
+		CHECK(mt_raises("iio:EPERM", "channel_disable", 2, mt_u64(tx_alt), mt_u64(tview)));
+		CHECK(mt_raises("iio:EINVAL", "channel_enable", 2, mt_u64(tx_alt), mt_u64(tmask)));
+		gw_handle_destroy(tbs);
+		mt_ok("channels_mask_destroy", 1, mt_u64(tmask));
+	}
 	CHECK(mt_raises("iio:EBADF", "channels_mask_get", 1, mt_u64(view)));
 	CHECK(mt_raises("iio:EBADF", "channel_is_enabled", 2, mt_u64(v0q), mt_u64(view)));
 	mt_ok("channels_mask_destroy", 1, mt_u64(view));          /* stale: silent */

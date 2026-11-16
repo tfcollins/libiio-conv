@@ -262,6 +262,13 @@ int main(int argc, char **argv)
 	CHECK(mt_raises("iio:EINVAL", "test_fake_set", 2, mt_str(""), mt_dbl(1)));
 	CHECK(mt_raises("iio:EINVAL", "test_fake_set", 2, mt_str("couple"),
 		mt_str("a-channel-id-that-is-longer-than-any-channel-id-of-a-fixture-can-be-0123456789")));
+	/* the limit itself: 63 characters fit the 64-byte buffer, 64 do not */
+	mt_ok("test_fake_set", 2, mt_str("couple"),
+		mt_str("c23456789012345678901234567890123456789012345678901234567890123"));
+	CHECK(opened_sample_size(id) == 4);      /* no such channel: nothing is coupled */
+	CHECK(mt_raises("iio:EINVAL", "test_fake_set", 2, mt_str("couple"),
+		mt_str("c234567890123456789012345678901234567890123456789012345678901234")));
+	mt_ok("test_fake_set", 2, mt_str("couple"), mt_str(""));
 	/* text with an embedded NUL is refused, not cut */
 	CHECK(mt_raises("iio:EINVAL", "test_fake_set", 2, nul_str("busy?x", 4), mt_dbl(1)));
 	CHECK(mt_raises("iio:EINVAL", "test_fake_set", 2, nul_str("couple?", 6), mt_str("voltage1_i")));
