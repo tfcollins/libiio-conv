@@ -263,6 +263,39 @@ there is no baseline).
 | 8 | Tx double complex | scalar | 9 | - | 1.0x |
 | 8 | Tx double complex | neon | 18 | - | 2.0x |
 
+## MATLAB fast path (emu, GitHub-hosted runner)
+
+`iio.RxStream` against the conversion written in M code, measured by the test
+`matlab/tests/tTiming.m` in CI run
+[43977125124](https://github.com/tfcollins/libiio-conv/actions/runs/43977125124) on
+`ubuntu-24.04` hosted runners (the CPU model of each runner is the `Runner CPU:` line of that
+job's summary "MATLAB fast path timing"). One frame is 262144 samples of 2 channels of 16 bit
+(one I/Q pair); each value is the median of 30 frames after 5 warm-up frames.
+
+| path | R2025b ms per frame | R2025b MS/s | R2023b ms per frame | R2023b MS/s |
+|---|---|---|---|---|
+| `fast_int16_complex`: `RxStream` returns complex int16 | 0.090 | 2929.0 | 0.142 | 1839.6 |
+| `mcode_int16_complex`: raw int16 from the stream, then transpose, `complex()` of the two rows, transpose | 0.875 | 299.6 | 1.120 | 234.1 |
+| `fast_double_fullscale`: `RxStream` returns complex double scaled to full scale | 0.135 | 1949.0 | 0.201 | 1304.2 |
+| `mcode_double_fullscale`: the M-code path above, then `double(out) / 2048` | 2.259 | 116.1 | 2.703 | 97.0 |
+
+| ratio (M code / fast path) | R2025b | R2023b |
+|---|---|---|
+| complex int16 | 9.78 | 7.86 |
+| complex double, full scale | 16.79 | 13.45 |
+
+How to read this:
+
+- Every time includes the emu backend reading the 1 MiB frame from its data file, the same
+  in all four paths. No MS/s value here is a device throughput, and the ratios understate the
+  ratio of the conversions alone.
+- `mcode_int16_complex` keeps int16. The receive step of the ADI toolboxes
+  (`adi.common.Rx`) also allocates a complex double matrix and assigns into it, so this path
+  is a lower bound of the toolbox step, not the toolbox step itself.
+- The two releases ran on two different runners, so the columns compare paths within a
+  release, not the releases with each other.
+- Shared runners are noisy; the test asserts values, never a time.
+
 ## Reading the numbers
 
 - The gain over libiio's per-sample conversion is 4x to 18x even for the

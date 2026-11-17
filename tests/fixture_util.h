@@ -10,6 +10,13 @@
  *   word 2k + 1 = (Q & 0x0fff) | (((k >> 4) & 0xf) << 12)
  * The four upper bits are junk on purpose, so that converted and raw results
  * differ. emu delivers the bytes of the file as they are, whatever the mask.
+ *
+ * A block must not be longer than the file (16384 bytes: 4096 samples of two
+ * channels, 2048 of four). The emu backend of the pinned libiio fills a block
+ * with one read from its place in the file and one more from the start of the
+ * file, and reports success whatever that gave: the rest of a longer block is
+ * not data (emu_dequeue_block in deps/src/libiio/emu.c). No test may ask for
+ * such a block, and a test of the fast path always names its frame size.
  */
 #ifndef FIXTURE_UTIL_H
 #define FIXTURE_UTIL_H

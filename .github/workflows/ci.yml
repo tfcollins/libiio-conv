@@ -28,7 +28,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ninja-build libxml2-dev libzstd-dev bison flex
+            ninja-build libxml2-dev libzstd-dev bison flex locales
+
+      # The gateway tests (tests/mex) prove that the numeric locale of the process does not
+      # matter; they fail without an installed locale that has a decimal comma.
+      - name: Generate a locale with a decimal comma
+        run: |
+          sudo locale-gen de_DE.UTF-8
+          locale -a | grep -i -x 'de_DE\.utf-\?8'
 
       - name: Cache pinned libiio v1
         uses: actions/cache@v4
@@ -44,13 +51,13 @@ jobs:
 
       - name: Build and test
         run: |
-          cmake -S . -B build -G Ninja
+          cmake -S . -B build -G Ninja -DIIO_CONV_STRICT_TESTS=ON
           cmake --build build
           ctest --test-dir build --output-on-failure
 
       - name: Build and test with sanitizers
         run: |
-          cmake -S . -B build-asan -G Ninja -DIIO_CONV_SANITIZE=ON
+          cmake -S . -B build-asan -G Ninja -DIIO_CONV_SANITIZE=ON -DIIO_CONV_STRICT_TESTS=ON
           cmake --build build-asan
           ctest --test-dir build-asan --output-on-failure
 
@@ -65,13 +72,189 @@ jobs:
       - name: Build and test with FMA available (x86-64-v3)
         if: runner.arch == 'X64'
         run: |
-          cmake -S . -B build-fma -G Ninja -DCMAKE_C_FLAGS=-march=x86-64-v3 -DIIO_CONV_SANITIZE=ON
+          cmake -S . -B build-fma -G Ninja -DCMAKE_C_FLAGS=-march=x86-64-v3 -DIIO_CONV_SANITIZE=ON -DIIO_CONV_STRICT_TESTS=ON
           cmake --build build-fma
           ctest --test-dir build-fma --output-on-failure
 
       - name: Release build, tests and a short benchmark
         run: |
-          cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DIIO_CONV_BUILD_BENCH=ON
+          cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DIIO_CONV_BUILD_BENCH=ON -DIIO_CONV_STRICT_TESTS=ON
           cmake --build build-rel
           ctest --test-dir build-rel --output-on-failure
           build-rel/bench/bench_conv -n 12 tests/resources/conv_test.xml
+
+  matlab:
+    name: MATLAB bindings (${{ matrix.release }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        release: [R2025b, R2023b]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build libxml2-dev libzstd-dev bison flex locales
+
+      # The gateway tests (tests/mex) prove that the numeric locale of the process does not
+      # matter; they fail without an installed locale that has a decimal comma.
+      - name: Generate a locale with a decimal comma
+        run: |
+          sudo locale-gen de_DE.UTF-8
+          locale -a | grep -i -x 'de_DE\.utf-\?8'
+
+      - name: Cache pinned libiio v1
+        uses: actions/cache@v4
+        with:
+          path: deps/install
+          key: libiio-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deps/build-libiio.sh') }}
+
+      - name: Build pinned libiio v1
+        run: deps/build-libiio.sh
+
+      - name: Set up MATLAB
+        id: setup-matlab
+        uses: matlab-actions/setup-matlab@v2
+        with:
+          release: ${{ matrix.release }}
+          cache: true
+
+      - name: Locate MATLAB
+        run: |
+          root="${{ steps.setup-matlab.outputs.matlabroot }}"
+          [ -n "$root" ] || root=$(dirname "$(dirname "$(readlink -f "$(command -v matlab)")")")
+          test -f "$root/extern/include/mex.h"
+          test -x "$root/bin/glnxa64/mlint" || echo "::warning::no mlint in $root: the test mex_mlint will exit 77 (see matlab/tools/check_mlint.sh)"
+          echo "MATLAB_ROOT=$root" >> "$GITHUB_ENV"
+
+      - name: Configure and build (mock tests with sanitizers, real MEX)
+        run: |
+          cmake -S . -B build-mex -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DIIO_CONV_STRICT_TESTS=ON -DMatlab_ROOT_DIR="$MATLAB_ROOT"
+          cmake --build build-mex
+
+      - name: Gateway checks without MATLAB (G1 to G4)
+        run: ctest --test-dir build-mex -L mex --output-on-failure
+
+      # The MEX file as it is handed out (matlab/README.md): no test_* commands, no fake backend.
+      # Its own output directory: matlab/iio_mex.mexa64 above is the one the MATLAB tests use.
+      - name: MEX without the test hooks builds
+        run: |
+          cmake -S . -B build-mex-dist -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DIIO_CONV_BUILD_TESTS=OFF \
+            -DIIO_CONV_STRICT_TESTS=ON -DMatlab_ROOT_DIR="$MATLAB_ROOT" -DIIO_MEX_OUTPUT_DIR="$PWD/build-mex-dist/out"
+          cmake --build build-mex-dist
+          test -f build-mex-dist/out/iio_mex.mexa64
+          if strings build-mex-dist/out/iio_mex.mexa64 | grep -q test_create_fake; then
+            echo "the test commands are in the MEX file"; exit 1
+          fi
+
+      - name: Prepare the result folder
+        run: mkdir -p test-results
+
+      - name: MATLAB tests (G5)
+        uses: matlab-actions/run-tests@v2
+        env:
+          IIO_MEX_TRACE: ${{ github.workspace }}/test-results/iio-mex-trace.log
+          IIO_TEST_RESULTS: ${{ github.workspace }}/test-results
+        with:
+          source-folder: matlab
+          select-by-folder: matlab/tests
+          test-results-junit: test-results/matlab.xml
+          strict: true
+          startup-options: -logfile test-results/matlab.log
+
+      - name: Process exit with libiio loaded (run 1 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 2 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 3 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 4 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 5 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 6 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 7 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 8 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 9 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: Process exit with libiio loaded (run 10 of 10)
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab'); c = iio.Context(['emu:' fullfile(pwd, 'tests', 'resources', 'iio_fixture.xml')]); a = c.find_attr('hw_model'); disp(a.read()); p = matlab.io.xml.dom.Parser; exit
+
+      - name: No crash dump after the exit checks
+        run: |
+          if ls ~/matlab_crash_dump.* >/dev/null 2>&1; then echo "exit check: crash dump found"; exit 1; fi
+
+      # A green test step says only that no test failed. This also fails the job when tests
+      # did not run (fewer than the minimum), were skipped, or took 4.9 s or more (tTiming is
+      # exempt): the stall of the emu backend that this looks for is 5 s, and a test that
+      # pays for a cold start of MATLAB on a shared runner must not reach the limit. The
+      # step comes after the exit checks, so that a slow test does not skip them. The minimum
+      # is the number of test methods rounded down to a multiple of 10 (238 after wave 2b:
+      # 211 in the last green run and the 27 that wave added); raise it when the suite grows.
+      - name: Check the MATLAB test results (count, skipped, duration)
+        if: always()
+        run: python3 matlab/tools/check_junit.py test-results/matlab.xml --min-tests 230 --max-seconds 4.9 --max-skipped 0
+
+      - name: Collect crash dumps
+        if: always()
+        run: mkdir -p test-results && cp ~/matlab_crash_dump.* test-results/ 2>/dev/null || true
+
+      - name: Upload MATLAB test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matlab-${{ matrix.release }}
+          path: test-results/
+
+      # Written by tTiming; absent when that test did not run. The CPU is that of this job's
+      # runner (the job c-library runs on another machine).
+      - name: Timing summary
+        if: always()
+        run: |
+          if [ -f test-results/timing.txt ]; then
+            {
+              echo '### MATLAB fast path timing (${{ matrix.release }})'
+              echo
+              echo '```'
+              cat test-results/timing.txt
+              echo '```'
+              echo
+              echo "Runner CPU: $(lscpu | grep -i -m1 'model name' | sed 's/^[^:]*: *//')"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

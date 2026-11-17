@@ -949,6 +949,87 @@ static void find(const struct iio_context *c, const char *name, bool output,
 	CHECK(*buf && iq[0] && iq[1]);
 }
 
+/* The operations of the fake that the stream layer does not use; the gateway tests rely on them. */
+static void test_backend_misc(void)
+{
+	const struct iio_device *rx = iio_context_find_device(ctx, "emu-rx");
+	const struct iio_device *phy = iio_context_find_device(ctx, "emu-phy");
+	const struct iio_device *trig = iio_context_find_device(ctx, "trigger0");
+	const struct iio_attr *text = phy ? iio_device_find_attr(phy, "text") : NULL;
+	static unsigned char big[47000];
+	const struct iio_device *t;
+	struct iio_event_stream *es;
+	struct iio_context *bad;
+	struct iio_event ev;
+	char buf[64];
+	size_t i;
+
+	reset();
+	CHECK(!strcmp(iio_context_get_name(ctx), "fake"));
+	CHECK(iio_context_get_devices_count(ctx) == 8 && iio_context_get_attrs_count(ctx) == 4);
+	CHECK(!strcmp(iio_context_get_description(ctx), "Emulated fixture & test context (fake)"));
+	CHECK(rx && phy && trig && text);
+	if (!rx || !phy || !trig || !text)
+		return;
+
+	/* attributes: a read names the attribute, a write keeps exactly the bytes it got */
+	memset(buf, '?', sizeof(buf));
+	CHECK(iio_attr_read_raw(text, buf, sizeof(buf)) == 10 && !strcmp(buf, "fake:text"));
+	CHECK(iio_attr_read_raw(text, buf, 9) == -ENOSPC);
+	CHECK(fake.attr_data == NULL && fake.attr_len == 0);
+	for (i = 0; i < sizeof(big); i++)
+		big[i] = (unsigned char)(i % 256);
+	CHECK(iio_attr_write_raw(text, big, sizeof(big)) == (ssize_t)sizeof(big));
+	CHECK(fake.attr_len == sizeof(big) && fake.attr_data && !memcmp(fake.attr_data, big, sizeof(big)));
+	CHECK(iio_attr_write_raw(text, "ab", 2) == 2);         /* replaces the previous copy */
+	CHECK(fake.attr_len == 2 && fake.attr_data && !memcmp(fake.attr_data, "ab", 2));
+	fake_reset();
+	CHECK(fake.attr_data == NULL && fake.attr_len == 0);
+
+	/* the context timeout reaches the backend */
+	CHECK(fake.timeout == FAKE_NO_TIMEOUT);
+	CHECK(iio_context_set_timeout(ctx, 250) == 0 && fake.timeout == 250);
+	CHECK(iio_context_set_timeout(ctx, -1) == 0 && fake.timeout == -1);
+	CHECK(iio_context_set_timeout(ctx, 1000) == 0 && fake.timeout == 1000);   /* as the other tests found it */
+	fake_reset();
+	CHECK(fake.timeout == FAKE_NO_TIMEOUT && fake.rx_frames == 3 && fake.tx_frames == 2);
+
+	/* events: only on emu-phy; two, then nothing */
+	es = iio_device_create_event_stream(rx);
+	CHECK(iio_err(es) == -ENODEV);
+	es = iio_device_create_event_stream(phy);
+	CHECK(!iio_err(es));
+	if (!iio_err(es)) {
+		CHECK(iio_event_stream_read(es, &ev, true) == 0);
+		CHECK(ev.id == UINT64_C(0x0001000000000000) && ev.timestamp == 1000);
+		CHECK(iio_event_stream_read(es, &ev, true) == 0);
+		CHECK(ev.id == UINT64_C(0x0102010300000000) && ev.timestamp == 1001);
+		CHECK(iio_event_stream_read(es, &ev, true) == -EBUSY);
+		CHECK(iio_event_stream_read(es, &ev, false) == -ETIMEDOUT);
+		CHECK(!strcmp(fake.log, "nnnb"));       /* each read, with its nonblock flag */
+		fake.ev_none = EAGAIN;                  /* "no event" as another backend says it */
+		CHECK(iio_event_stream_read(es, &ev, true) == -EAGAIN);
+		CHECK(iio_event_stream_read(es, &ev, false) == -EAGAIN);
+		fake.ev_none = 0;
+		iio_event_stream_destroy(es);
+	}
+
+	/* triggers */
+	t = iio_device_get_trigger(rx);
+	CHECK(iio_err(t) == -ENODEV);
+	CHECK(iio_device_set_trigger(rx, trig) == 0);
+	CHECK(iio_device_get_trigger(rx) == trig);
+	CHECK(iio_device_set_trigger(rx, phy) == -EINVAL);
+	CHECK(iio_device_get_trigger(rx) == trig);
+
+	bad = fake_create_context("/nonexistent.xml");
+	CHECK(iio_err(bad) == -EINVAL);
+	if (!iio_err(bad))
+		iio_context_destroy(bad);
+	CHECK(!strcmp(fake.log, "nnnbnb"));     /* nothing but the event reads reached the backend */
+	reset();
+}
+
 int main(int argc, char **argv)
 {
 	static const struct iio_context_params params;
@@ -1005,6 +1086,7 @@ int main(int argc, char **argv)
 		test_tx_lost_block();
 		test_tx_rotation();
 		test_tx_close_policy();
+		test_backend_misc();
 	}
 
 	if (!iio_err(ictx))

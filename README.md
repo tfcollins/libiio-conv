@@ -5,14 +5,17 @@
 Fast conversion between IIO buffer samples and host arrays (type change, I/Q
 pairing, layout, scaling) for libiio v1, with SIMD kernels chosen at run time.
 
-Measured gain over converting sample by sample with libiio is 13x to 167x for
-12-bit-in-16 data on x86-64, depending on the case and block size; see
+Measured gain over converting sample by sample with libiio is 13x to 167x
+with the SIMD backends (4x to 18x with the scalar backend) for 12-bit-in-16
+data on x86-64, depending on the case and block size; see
 `docs/benchmarks.md`. The design is in
 `docs/superpowers/specs/`.
 
 Status: the C library is complete. All backends are tested: SSE4.1, AVX2 and
 AVX-512 on x86-64, and NEON on a Cortex-A72 (static cross build, see below).
-MATLAB bindings are the next part of the project.
+The MATLAB bindings for libiio v1 in `matlab/` are complete for Linux x86-64
+and tested in MATLAB R2025b and R2023b on libiio's emulation backend; they
+have not been run on hardware yet.
 
 ## Build
 
@@ -20,6 +23,20 @@ MATLAB bindings are the next part of the project.
     cmake -S . -B build -G Ninja
     cmake --build build
     ctest --test-dir build --output-on-failure
+
+Needs GCC, CMake 3.20 or later and Ninja. `deps/build-libiio.sh` needs git
+and the packages `libxml2-dev libzstd-dev bison flex`.
+
+The default build also builds the tests of the MATLAB gateway (label `mex`;
+they need no MATLAB). These use Python 3 (at configure and build time), the
+ASan/UBSan runtime of the compiler (`libasan`, `libubsan`: separate packages
+on some distributions) and one installed locale with a decimal comma
+(`sudo locale-gen de_DE.UTF-8`). What is missing is left out with a message:
+without Python the gateway tests are not built, without the runtime they are
+built unsanitized, without the locale their numeric-locale checks do not
+run. `-DIIO_CONV_STRICT_TESTS=ON` (CI uses it) makes each of these an error,
+and compiles the gateway with `-Werror`. `-DIIO_CONV_BUILD_MEX_TESTS=OFF`
+builds the C library and its own tests only.
 
 ## Backends
 
@@ -161,6 +178,36 @@ strictly in the order they were queued and forgets a block whose transfer
 failed: frames must arrive whole and in order, and a lost transmit frame
 must be reported. The stream layer has not been run on hardware yet.
 
+## MATLAB bindings
+
+`matlab/` holds bindings for libiio v1: one MEX file and the package `iio`,
+whose handle classes reach the public functions of `iio.h`. `iio.RxStream`
+and `iio.TxStream` sit on the stream layer above and move one frame per call
+straight into and out of a MATLAB array.
+
+    deps/build-libiio.sh
+    cmake -S . -B build -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DMatlab_ROOT_DIR=<MATLAB root>
+    cmake --build build
+
+```matlab
+addpath('<repo>/matlab')
+ctx = iio.Context("ip:192.168.2.1");
+dev = ctx.find_device("cf-ad9361-lpc");
+rx = iio.RxStream(dev, ["voltage0" "voltage1"], SamplesPerFrame = 16384, ...
+    OutputDataType = "single", Complex = true, Scale = "fullscale");
+[iq, valid] = rx.read();      % 16384-by-1 complex single, -1 to 1
+if ~valid
+    disp('no frame in time')  % not an error: iq is all zero, read again
+end
+rx.close();
+```
+
+`matlab/README.md` has the object model, every option, the class reference
+and the mapping from libiio v0. The same text is built into HTML pages with
+Sphinx, see [Documentation](#documentation). Limitations: Linux x86-64 and MATLAB R2023b
+or later only, no code generation yet, a blocking call cannot be interrupted
+with Ctrl-C, and nothing has been run on hardware.
+
 ## Host array
 
 | `type` | I8, U8, I16, U16, I32, U32, I64, U64, F32, F64 |
@@ -213,6 +260,18 @@ Integer conversions wrap unless `saturate` is set.
 
 Without the XML file, or in a build without libiio (such as the static ARM
 build), the backends are compared with the scalar backend only.
+
+## Documentation
+
+`docs/` is a Sphinx project (MyST Markdown). The MATLAB page includes
+`matlab/README.md`, so that file stays the single source.
+
+    python -m pip install -r docs/requirements.txt
+    python -m sphinx -W -b html docs docs/_build/html
+
+Open `docs/_build/html/index.html`. CI builds the pages in the
+[Docs workflow](https://github.com/tfcollins/libiio-conv/actions/workflows/docs.yml);
+they are not deployed anywhere.
 
 ## Licence
 
