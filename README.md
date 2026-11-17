@@ -203,7 +203,8 @@ rx.close();
 ```
 
 `matlab/README.md` has the object model, every option, the class reference
-and the mapping from libiio v0. Limitations: Linux x86-64 and MATLAB R2023b
+and the mapping from libiio v0. The same text is built into HTML pages with
+Sphinx, see [Documentation](#documentation). Limitations: Linux x86-64 and MATLAB R2023b
 or later only, no code generation yet, a blocking call cannot be interrupted
 with Ctrl-C, and nothing has been run on hardware.
 
@@ -259,6 +260,18 @@ Integer conversions wrap unless `saturate` is set.
 
 Without the XML file, or in a build without libiio (such as the static ARM
 build), the backends are compared with the scalar backend only.
+
+## Documentation
+
+`docs/` is a Sphinx project (MyST Markdown). The MATLAB page includes
+`matlab/README.md`, so that file stays the single source.
+
+    python -m pip install -r docs/requirements.txt
+    python -m sphinx -W -b html docs docs/_build/html
+
+Open `docs/_build/html/index.html`. CI builds the pages in the
+[Docs workflow](https://github.com/tfcollins/libiio-conv/actions/workflows/docs.yml);
+they are not deployed anywhere.
 
 ## Licence
 
