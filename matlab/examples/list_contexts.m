@@ -9,6 +9,8 @@ function t = list_contexts(opts)
 %
 %   T = LIST_CONTEXTS(Backends = LIST) scans the backends of the comma-separated
 %   LIST. A backend that libiio does not have, or that cannot scan, adds no row.
+%   Backends = "" is no list at all: the backends libiio scans by default, as with
+%   iio.scan_contexts().
 %   The libiio of deps/build-libiio.sh has no usb backend and no network scan
 %   (DNS-SD), so "usb,ip" finds a device only with a libiio built with both; an
 %   ADALM-Pluto is then reached by its address, iio.Context("ip:192.168.2.1").

@@ -129,6 +129,9 @@ classdef tExamples < IioTestCase
             tc.verifyClass(t.uri, 'string');
             tc.verifyClass(t.description, 'string');
             tc.verifyTrue(all(startsWith(t.uri, "local:")));
+            % Backends = "" is no list: libiio's default list, which is the local backend
+            % in the libiio of deps/build-libiio.sh
+            tc.verifyEqual(list_contexts(Backends = ""), t);
         end
     end
 end

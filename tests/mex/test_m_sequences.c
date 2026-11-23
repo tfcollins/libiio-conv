@@ -1393,7 +1393,9 @@ static void examples(void)
 	}
 	/* scan_contexts("") and scan_contexts(): M sends [] for both, C NULL, libiio's default
 	 * list, which is "local" in the pinned build: the same contexts as the scan above. (''
-	 * would be a list of no backend; test_cmd_toplevel has that.) */
+	 * would be a list of no backend; test_cmd_toplevel has that.) This is the gateway's side
+	 * only: that M sends [] for "" is checked in MATLAB, by tTopLevel's
+	 * scanEmptyBackendsSendsNoList. */
 	{
 		size_t n_local = mxGetNumberOfElements(out[0]);
 		mxArray *def[2];

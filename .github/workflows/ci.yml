@@ -146,17 +146,26 @@ jobs:
       # (IIO_CONV_MEX_TEST_HOOKS is not given) has no test_* commands and no fake backend.
       # Only the MEX file and the checks of the file itself are built and run here; the mock
       # tests ran above. Its own output directory: matlab/iio_mex.mexa64 above is the one the
-      # MATLAB tests use.
+      # MATLAB tests use. IIO_CONV_STRICT_TESTS=ON adds -Werror to the gateway: this variant has
+      # code paths of its own (no IIO_MEX_TEST_HOOKS). All three checks must have run. Then the
+      # configuration without any test (IIO_CONV_BUILD_TESTS=OFF) builds whole.
       - name: Default MEX build has no test hooks
         run: |
-          cmake -S . -B build-mex-dist -G Ninja -DIIO_CONV_BUILD_MATLAB=ON \
+          cmake -S . -B build-mex-dist -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DIIO_CONV_STRICT_TESTS=ON \
             -DMatlab_ROOT_DIR="$MATLAB_ROOT" -DIIO_MEX_OUTPUT_DIR="$PWD/build-mex-dist/out"
           cmake --build build-mex-dist --target iio_mex mex_loadcheck
           test -f build-mex-dist/out/iio_mex.mexa64
-          ctest --test-dir build-mex-dist -R '^(mex_test_hooks|mex_exports|mex_loadcheck)$' --output-on-failure
+          ctest --test-dir build-mex-dist -R '^(mex_test_hooks|mex_exports|mex_loadcheck)$' \
+            --no-tests=error --output-on-failure | tee build-mex-dist/ctest.log
+          grep -q '100% tests passed, 0 tests failed out of 3' build-mex-dist/ctest.log
           if strings build-mex-dist/out/iio_mex.mexa64 | grep -q -E 'test_create_fake|test_fake_'; then
             echo "the test commands are in the MEX file"; exit 1
           fi
+          cmake -S . -B build-mex-notests -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DIIO_CONV_BUILD_TESTS=OFF \
+            -DIIO_CONV_STRICT_TESTS=ON -DMatlab_ROOT_DIR="$MATLAB_ROOT" \
+            -DIIO_MEX_OUTPUT_DIR="$PWD/build-mex-notests/out"
+          cmake --build build-mex-notests
+          matlab/tools/check_mex_hooks.sh build-mex-notests/out/iio_mex.mexa64 without
 
       - name: Prepare the result folder
         run: mkdir -p test-results
@@ -232,9 +241,10 @@ jobs:
       # exempt): the stall of the emu backend that this looks for is 5 s, and a test that
       # pays for a cold start of MATLAB on a shared runner must not reach the limit. The
       # step comes after the exit checks, so that a slow test does not skip them. The minimum
-      # is the number of test methods rounded down to a multiple of 10 (241: 238 after wave 2b
-      # and the 3 of the API decisions: scanEmptyBackendsIsDefault and timeoutConstants of
-      # tRxStream and of tTxStream); raise it when the suite grows.
+      # is the number of test methods rounded down to a multiple of 10 (242: 238 after wave 2b
+      # and the 4 of the API decisions: scanEmptyBackendsIsDefault and
+      # scanEmptyBackendsSendsNoList of tTopLevel, timeoutConstants of tRxStream and of
+      # tTxStream); raise it when the suite grows.
       - name: Check the MATLAB test results (count, skipped, duration)
         if: always()
         run: python3 matlab/tools/check_junit.py test-results/matlab.xml --min-tests 240 --max-seconds 4.9 --max-skipped 0
