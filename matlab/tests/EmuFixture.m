@@ -59,7 +59,7 @@ classdef EmuFixture < matlab.unittest.fixtures.Fixture
         end
 
         function ctx = fakeContext(fixture)
-            %FAKECONTEXT Context on the test-only fake backend (needs a MEX built with the test hooks).
+            %FAKECONTEXT Context on the test-only fake backend (needs a MEX built with -DIIO_CONV_MEX_TEST_HOOKS=ON).
             ctx = iio.Context(AdoptHandle = iio_mex('test_create_fake_context', fixture.XmlFile));
         end
     end

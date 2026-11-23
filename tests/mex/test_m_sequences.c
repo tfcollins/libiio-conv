@@ -1391,6 +1391,28 @@ static void examples(void)
 		CHECK(uri && !strcmp(uri, "local:"));
 		mxFree(uri);
 	}
+	/* scan_contexts("") and scan_contexts(): M sends [] for both, C NULL, libiio's default
+	 * list, which is "local" in the pinned build: the same contexts as the scan above. (''
+	 * would be a list of no backend; test_cmd_toplevel has that.) */
+	{
+		size_t n_local = mxGetNumberOfElements(out[0]);
+		mxArray *def[2];
+		uint64_t s2;
+
+		s2 = mt_u64_of("scan", 2, opts(1, "log_level", mt_dbl(1)), mt_empty());
+		CHECK(mt_call(2, def, "scan_get_results", 1, mt_u64(s2)) == 0);
+		CHECK(mxIsCell(def[0]) && mxGetNumberOfElements(def[0]) == n_local &&
+			mxGetNumberOfElements(def[1]) == n_local);
+		if (n_local == 1) {
+			char *uri = mxArrayToString(mxGetCell(def[0], 0));
+
+			CHECK(uri && !strcmp(uri, "local:"));
+			mxFree(uri);
+		}
+		mxDestroyArray(def[0]);
+		mxDestroyArray(def[1]);
+		mt_ok("scan_destroy", 1, mt_u64(s2));
+	}
 	mxDestroyArray(out[0]);
 	mxDestroyArray(out[1]);
 	mt_ok("scan_destroy", 1, mt_u64(s));

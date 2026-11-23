@@ -15,6 +15,8 @@ option(IIO_CONV_SANITIZE "Build with ASan and UBSan" OFF)
 option(IIO_CONV_BUILD_TESTS "Build tests" ON)
 option(IIO_CONV_BUILD_BENCH "Build benchmarks" OFF)
 option(IIO_CONV_BUILD_MATLAB "Build matlab/iio_mex.mexa64 (needs -DMatlab_ROOT_DIR=<MATLAB root>)" OFF)
+option(IIO_CONV_MEX_TEST_HOOKS "Compile the test_* commands (the scripted backend of the tests) into \
+iio_mex.mexa64; the MATLAB test suite needs them, a MEX file that is handed out has none" OFF)
 option(IIO_CONV_BUILD_MEX_TESTS "Tests of the MATLAB gateway on a mock MATLAB runtime (need Python 3; no MATLAB)" ON)
 option(IIO_CONV_MEX_SANITIZE "ASan and UBSan for the gateway's mock-based tests" ON)
 option(IIO_CONV_STRICT_TESTS "A missing prerequisite of a test (Python 3, the sanitizer runtime, \

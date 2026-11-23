@@ -189,6 +189,10 @@ straight into and out of a MATLAB array.
     cmake -S . -B build -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DMatlab_ROOT_DIR=<MATLAB root>
     cmake --build build
 
+That MEX file is the one to hand out. The MATLAB test suite needs one built
+with `-DIIO_CONV_MEX_TEST_HOOKS=ON` as well (default `OFF`), see
+`matlab/README.md`.
+
 ```matlab
 addpath('<repo>/matlab')
 ctx = iio.Context("ip:192.168.2.1");

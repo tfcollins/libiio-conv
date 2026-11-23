@@ -131,23 +131,30 @@ jobs:
           test -x "$root/bin/glnxa64/mlint" || echo "::warning::no mlint in $root: the test mex_mlint will exit 77 (see matlab/tools/check_mlint.sh)"
           echo "MATLAB_ROOT=$root" >> "$GITHUB_ENV"
 
-      - name: Configure and build (mock tests with sanitizers, real MEX)
+      # IIO_CONV_MEX_TEST_HOOKS=ON: the MEX file the MATLAB tests use has the test_* commands
+      # (the scripted backend). The ctest step below checks that they are in (mex_test_hooks).
+      - name: Configure and build (mock tests with sanitizers, real MEX with the test hooks)
         run: |
-          cmake -S . -B build-mex -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DIIO_CONV_STRICT_TESTS=ON -DMatlab_ROOT_DIR="$MATLAB_ROOT"
+          cmake -S . -B build-mex -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DIIO_CONV_MEX_TEST_HOOKS=ON \
+            -DIIO_CONV_STRICT_TESTS=ON -DMatlab_ROOT_DIR="$MATLAB_ROOT"
           cmake --build build-mex
 
       - name: Gateway checks without MATLAB (G1 to G4)
         run: ctest --test-dir build-mex -L mex --output-on-failure
 
-      # The MEX file as it is handed out (matlab/README.md): no test_* commands, no fake backend.
-      # Its own output directory: matlab/iio_mex.mexa64 above is the one the MATLAB tests use.
-      - name: MEX without the test hooks builds
+      # The MEX file as it is handed out: the build of matlab/README.md with its default options
+      # (IIO_CONV_MEX_TEST_HOOKS is not given) has no test_* commands and no fake backend.
+      # Only the MEX file and the checks of the file itself are built and run here; the mock
+      # tests ran above. Its own output directory: matlab/iio_mex.mexa64 above is the one the
+      # MATLAB tests use.
+      - name: Default MEX build has no test hooks
         run: |
-          cmake -S . -B build-mex-dist -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DIIO_CONV_BUILD_TESTS=OFF \
-            -DIIO_CONV_STRICT_TESTS=ON -DMatlab_ROOT_DIR="$MATLAB_ROOT" -DIIO_MEX_OUTPUT_DIR="$PWD/build-mex-dist/out"
-          cmake --build build-mex-dist
+          cmake -S . -B build-mex-dist -G Ninja -DIIO_CONV_BUILD_MATLAB=ON \
+            -DMatlab_ROOT_DIR="$MATLAB_ROOT" -DIIO_MEX_OUTPUT_DIR="$PWD/build-mex-dist/out"
+          cmake --build build-mex-dist --target iio_mex mex_loadcheck
           test -f build-mex-dist/out/iio_mex.mexa64
-          if strings build-mex-dist/out/iio_mex.mexa64 | grep -q test_create_fake; then
+          ctest --test-dir build-mex-dist -R '^(mex_test_hooks|mex_exports|mex_loadcheck)$' --output-on-failure
+          if strings build-mex-dist/out/iio_mex.mexa64 | grep -q -E 'test_create_fake|test_fake_'; then
             echo "the test commands are in the MEX file"; exit 1
           fi
 
@@ -225,11 +232,12 @@ jobs:
       # exempt): the stall of the emu backend that this looks for is 5 s, and a test that
       # pays for a cold start of MATLAB on a shared runner must not reach the limit. The
       # step comes after the exit checks, so that a slow test does not skip them. The minimum
-      # is the number of test methods rounded down to a multiple of 10 (238 after wave 2b:
-      # 211 in the last green run and the 27 that wave added); raise it when the suite grows.
+      # is the number of test methods rounded down to a multiple of 10 (241: 238 after wave 2b
+      # and the 3 of the API decisions: scanEmptyBackendsIsDefault and timeoutConstants of
+      # tRxStream and of tTxStream); raise it when the suite grows.
       - name: Check the MATLAB test results (count, skipped, duration)
         if: always()
-        run: python3 matlab/tools/check_junit.py test-results/matlab.xml --min-tests 230 --max-seconds 4.9 --max-skipped 0
+        run: python3 matlab/tools/check_junit.py test-results/matlab.xml --min-tests 240 --max-seconds 4.9 --max-skipped 0
 
       - name: Collect crash dumps
         if: always()

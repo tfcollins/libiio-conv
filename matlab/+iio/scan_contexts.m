@@ -1,6 +1,7 @@
 function r = scan_contexts(backends, opts)
 %SCAN_CONTEXTS Look for IIO contexts that can be opened.
 %   R = iio.scan_contexts() scans the backends libiio scans by default.
+%   R = iio.scan_contexts("") does the same: an empty BACKENDS is no list at all.
 %   R = iio.scan_contexts(BACKENDS) scans the backends named in BACKENDS, a
 %   comma-separated list such as "usb,ip". A backend may take an argument after "=":
 %   "usb=0456:b673" limits the USB scan to that vendor and product id.
@@ -22,7 +23,8 @@ arguments
     opts.LogLevel (1,1) string {mustBeMember(opts.LogLevel, ["nolog", "error", "warning", "info", "debug"])}
 end
 p = iio.internal.params(opts);
-if nargin == 0
+if strlength(backends) == 0
+    % [] is C NULL: libiio's default list. An empty C string would be a list of no backend.
     h = iio_mex('scan', p, []);
 else
     h = iio_mex('scan', p, char(backends));

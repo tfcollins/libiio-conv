@@ -68,6 +68,22 @@ classdef tTopLevel < IioTestCase
             tc.verifyEqual(iio.internal.handle_count(), 0);
         end
 
+        function scanEmptyBackendsIsDefault(tc)
+            % "" is no list of backends: libiio's default list, as with no argument at all.
+            % How many contexts the default list finds depends on the machine (the local
+            % backend); the two calls agree on it. An empty C string instead would be a
+            % list of no backend and find nothing on a machine that has a context.
+            d = iio.scan_contexts(LogLevel = "nolog");
+            r = iio.scan_contexts("", LogLevel = "nolog");
+            tc.verifyClass(r, 'struct');
+            tc.verifyEqual(size(r, 1), 1);
+            tc.verifyEqual(fieldnames(r), {'uri'; 'description'});
+            tc.verifyEqual(r, d);
+            tc.verifyEqual(iio.scan_contexts(''), iio.scan_contexts());
+            tc.verifyEqual(iio.scan_contexts("", Timeout = 1000, LogLevel = "nolog"), d);
+            tc.verifyEqual(iio.internal.handle_count(), 0);
+        end
+
         function scanArguments(tc)
             tc.verifyError(@() iio.scan_contexts("emu", Timeout = 1.5), 'iio:EINVAL');
             % argument validation: an identifier of MATLAB itself, whatever its exact name
