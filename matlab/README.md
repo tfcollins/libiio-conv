@@ -40,10 +40,10 @@ In MATLAB:
 
     addpath('<repo>/matlab')
 
-The default build also registers the `test_*` commands that the test suite
-uses (a scripted backend inside the MEX file). They change nothing for a
-session that does not call them, but a MEX file that is handed out is built
-with `-DIIO_CONV_BUILD_TESTS=OFF`.
+This MEX file is the one to hand out. It does not have the `test_*`
+commands, a scripted backend inside the MEX file that the MATLAB test suite
+uses: `-DIIO_CONV_MEX_TEST_HOOKS=ON` (default `OFF`) compiles them in, for a
+MEX file that runs the tests (see [Testing](#testing)).
 
 `IIO_CONV_BUILD_MATLAB=ON` cannot be combined with `IIO_CONV_SANITIZE=ON`:
 MATLAB cannot load a sanitized MEX file.
@@ -100,7 +100,11 @@ class. Members are named after the libiio C functions without their prefix
 | `iio.EventStream` | `dev.create_event_stream()` | the events of a device |
 
 Package functions: `iio.version`, `iio.backends`, `iio.has_backend`,
-`iio.strerror`, `iio.scan_contexts`.
+`iio.strerror`, `iio.scan_contexts`. `iio.scan_contexts()` and
+`iio.scan_contexts("")` both scan libiio's default list of backends.
+
+`iio.StreamTimeout` holds the two named values of the `Timeout` option of
+`iio.RxStream` and `iio.TxStream`; see [Fast path](#fast-path).
 
 - Every object is a MATLAB handle object that holds a number, the id of a
   libiio object inside the MEX file. No C pointer reaches MATLAB. `a == b`
@@ -202,7 +206,7 @@ valid = tx.write(data);      % 1 to SamplesPerFrame rows, C columns
 | `Gain`, `Offset` | none | a scalar, or one value per column, for `double` and `single` only |
 | `Raw` | `false` | the storage words as they are, without shift, mask and sign extension. Not with `Scale = "iio"` |
 | `NumBlocks` | 2 | receive: blocks that capture in turn; transmit: frames that can be in flight. At most 4096 |
-| `Timeout` | -1 | how long `read`, `write` and `flush` wait, in ms. -1: as long as the timeout of the context allows. 0: not at all. A positive value: that long |
+| `Timeout` | `iio.StreamTimeout.FromContext` (-1) | how long `read`, `write` and `flush` wait, in ms. `iio.StreamTimeout.FromContext` (-1): as long as the timeout of the context allows. `iio.StreamTimeout.NonBlocking` (0): not at all. A positive value: that long |
 | `Buffer` | -1 | position of the buffer of the device, counted from 0. -1: the first buffer that has every channel |
 | `Cyclic` | `false` | transmit only: the first frame written repeats until the stream is closed; a second `write` is `iio:EBUSY` |
 
@@ -233,10 +237,17 @@ and `channels`.
   `ctx.set_timeout(ms)` (or `Timeout =` of `iio.Context`) changes attribute
   I/O and every stream of that context, and `Inf` means no timeout. The
   `Timeout` option of a stream is a limit of its own, kept by polling, and
-  never changes the context.
+  never changes the context. Its two special values are not those of the
+  context (there 0 is the default of the backend and -1 or `Inf` is no
+  timeout), so they have names, the constants of `iio.StreamTimeout`:
+
+  ```matlab
+  rx = iio.RxStream(dev, channels, Timeout = iio.StreamTimeout.NonBlocking);   % 0: read never waits
+  tx = iio.TxStream(dev, channels, Timeout = iio.StreamTimeout.FromContext);   % -1, the default
+  ```
 - **Closing.** `close`, `delete` and leaving scope release the buffer.
   Closing a transmit stream first waits for the frames in flight, as `write`
-  does: up to `Timeout` ms; with `Timeout = -1` as long as the timeout of the
+  does: up to `Timeout` ms; with `iio.StreamTimeout.FromContext` as long as the timeout of the
   context allows for each frame, and at most 1 s when the context timeout is
   `Inf`. That wait cannot be interrupted, and it also runs at `clear all`
   and when MATLAB exits: choose no `Timeout` longer than you are ready to
@@ -498,7 +509,7 @@ What the calls of the v0 API that the ADI toolboxes use become:
 | `iio_buffer_push` | `valid = tx.write(data)` |
 | `iio_buffer_destroy` | `close`, or `delete` of the stream |
 | `iio_buffer_get_poll_fd` | none |
-| `iio_buffer_set_blocking_mode(buf, false)` | the option `Timeout = 0` |
+| `iio_buffer_set_blocking_mode(buf, false)` | the option `Timeout = iio.StreamTimeout.NonBlocking` (0) |
 | `iio_channel_convert` | done by `read`: `Scale = "none"` (the default) gives the converted sample values; `Raw = true` leaves it out |
 
 ## Differences from the toolboxes' data path
@@ -564,7 +575,7 @@ another place). They run with
 | Gate | What |
 |---|---|
 | G1 | the C sources of the MEX file, compiled against a mock of the MATLAB runtime and run with ASan and UBSan on `emu:`, `xml:` and the scripted backend |
-| G2 | the real MEX file: its exports, and that it loads against MATLAB's `libmx` and `libmex` |
+| G2 | the real MEX file: its exports, that it loads against MATLAB's `libmx` and `libmex`, and that it has the `test_*` commands exactly when `IIO_CONV_MEX_TEST_HOOKS` is `ON` |
 | G3 | MATLAB's Code Analyzer (`matlab/tools/check_mlint.sh`) on every `.m` file |
 | G4 | `matlab/tools/check_api.py`: every function of `iio.h` has a row in `matlab/api-map.tsv`, every row a command and a MATLAB member that exist |
 | G5 | the `matlab.unittest` suite in `matlab/tests`, run in MATLAB R2025b and R2023b by the CI job `matlab` |
@@ -579,9 +590,15 @@ run by hand, not by `ctest`, fails without the locale unless
 `IIO_TEST_NO_COMMA_LOCALE=1` is in the environment).
 `-DIIO_CONV_BUILD_MEX_TESTS=OFF` leaves G1 and G4 out of a build.
 
-The MATLAB suite needs a MEX file built with the tests enabled
-(`IIO_CONV_BUILD_TESTS=ON`, the default): part of it runs on the scripted
-backend. In MATLAB, from the repository root:
+The MATLAB suite needs a MEX file built with the test hooks, because part
+of it runs on the scripted backend. They are off by default; add
+`-DIIO_CONV_MEX_TEST_HOOKS=ON` to the `cmake` line of [Build](#build):
+
+    cmake -S . -B build -G Ninja -DIIO_CONV_BUILD_MATLAB=ON -DIIO_CONV_MEX_TEST_HOOKS=ON -DMatlab_ROOT_DIR=<root>
+    cmake --build build
+
+G1 does not depend on the option: the mock build always has the hooks. In
+MATLAB, from the repository root:
 
     addpath('matlab'); results = runtests('matlab/tests');
 
@@ -601,7 +618,8 @@ fails if it leaves a libiio object behind.
 - **`iio:EBADF` from an object that looks fine**: its context was destroyed
   (`delete(ctx)`, `iio.internal.shutdown()`), or the stream was closed.
 - **`iio:ENOSYS` for a `test_*` command, or the test suite fails at once**:
-  the MEX file was built with `-DIIO_CONV_BUILD_TESTS=OFF`.
+  the MEX file was built without `-DIIO_CONV_MEX_TEST_HOOKS=ON`, the default
+  (see [Testing](#testing)).
 - **What did the MEX file do?** With `IIO_MEX_TRACE=<file>` in the environment
   before its first call, the MEX file appends one line per command and result
   to that file, for the whole session. Every build has this.

@@ -32,23 +32,25 @@ classdef TxStream < iio.internal.Object
     %       Cyclic            true: the first frame written repeats until the stream
     %                         is closed; a second write is an error (default false)
     %       Timeout           how long write and flush wait for a free block, in ms.
-    %                         -1 (default): as long as the timeout of the context
-    %                         allows; 0: not at all. Not the values of
-    %                         iio.Context: there 0 is the default of the backend
-    %                         and -1 or Inf is no timeout
+    %                         Two values have a name:
+    %                         iio.StreamTimeout.FromContext (-1, the default): as
+    %                         long as the timeout of the context allows;
+    %                         iio.StreamTimeout.NonBlocking (0): not at all.
+    %                         Not the values of iio.Context: there 0 is the default
+    %                         of the backend and -1 or Inf is no timeout
     %       Buffer            position of the buffer of DEV, counted from 0. -1
     %                         (default): the first buffer that has every channel
     %
     %   The first write starts the buffer. T.flush() waits until the queued frames are
     %   sent. T.close() waits for the frames in flight and releases the buffer; so does
     %   deleting T or letting it go out of scope. That wait is the one of write: up to
-    %   Timeout ms; with Timeout = -1 as long as the timeout of the context allows for
+    %   Timeout ms; with iio.StreamTimeout.FromContext as long as the timeout of the context allows for
     %   each frame, and at most one second when the context has no timeout. It cannot
     %   be interrupted, and it also runs at clear all and when MATLAB exits: set no
     %   Timeout that is longer than you are ready to wait there. The stream keeps DEV
     %   and its context alive.
     %
-    %   See also iio.RxStream, iio.Device, iio.Channel.
+    %   See also iio.RxStream, iio.StreamTimeout, iio.Device, iio.Channel.
 
     properties (SetAccess = immutable)
         device              % the iio.Device given
@@ -77,7 +79,7 @@ classdef TxStream < iio.internal.Object
                 opts.Offset double = double.empty(1,0)
                 opts.Raw (1,1) logical = false
                 opts.NumBlocks (1,1) double {mustBeInteger, mustBePositive} = 2
-                opts.Timeout (1,1) double {mustBeInteger, mustBeGreaterThanOrEqual(opts.Timeout, -1)} = -1   % ms; -1: the context timeout bounds the wait, 0: no wait
+                opts.Timeout (1,1) double {mustBeInteger, mustBeGreaterThanOrEqual(opts.Timeout, -1)} = iio.StreamTimeout.FromContext   % ms; see iio.StreamTimeout
                 opts.Buffer (1,1) double {mustBeInteger, mustBeGreaterThanOrEqual(opts.Buffer, -1)} = -1     % 0-based buffer position, -1 = automatic
                 opts.Cyclic (1,1) logical = false
             end

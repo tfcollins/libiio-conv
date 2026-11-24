@@ -26,8 +26,10 @@ classdef RxStream < iio.internal.Object
     %       Raw               true: the storage words as they are, without shift,
     %                         mask and sign extension (default false)
     %       NumBlocks         blocks that capture in turn (default 2, at most 4096)
-    %       Timeout           how long read waits, in ms. -1 (default): as long as the
-    %                         timeout of the context allows; 0: not at all.
+    %       Timeout           how long read waits, in ms. Two values have a name:
+    %                         iio.StreamTimeout.FromContext (-1, the default): as
+    %                         long as the timeout of the context allows;
+    %                         iio.StreamTimeout.NonBlocking (0): not at all.
     %                         Not the values of iio.Context: there 0 is the default
     %                         of the backend and -1 or Inf is no timeout
     %       Buffer            position of the buffer of DEV, counted from 0. -1
@@ -41,7 +43,7 @@ classdef RxStream < iio.internal.Object
     %   so does deleting R or letting it go out of scope. The stream keeps DEV and
     %   its context alive.
     %
-    %   See also iio.TxStream, iio.Device, iio.Channel.
+    %   See also iio.TxStream, iio.StreamTimeout, iio.Device, iio.Channel.
 
     properties (SetAccess = immutable)
         device              % the iio.Device given
@@ -71,7 +73,7 @@ classdef RxStream < iio.internal.Object
                 opts.Offset double = double.empty(1,0)
                 opts.Raw (1,1) logical = false
                 opts.NumBlocks (1,1) double {mustBeInteger, mustBePositive} = 2
-                opts.Timeout (1,1) double {mustBeInteger, mustBeGreaterThanOrEqual(opts.Timeout, -1)} = -1   % ms; -1: the context timeout bounds the wait, 0: no wait
+                opts.Timeout (1,1) double {mustBeInteger, mustBeGreaterThanOrEqual(opts.Timeout, -1)} = iio.StreamTimeout.FromContext   % ms; see iio.StreamTimeout
                 opts.Buffer (1,1) double {mustBeInteger, mustBeGreaterThanOrEqual(opts.Buffer, -1)} = -1     % 0-based buffer position, -1 = automatic
             end
             if isa(channels, 'iio.Channel')

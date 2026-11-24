@@ -3,11 +3,13 @@
 #   iio-mex-mock-<part>   against tests/mxmock            (G1; ASan + UBSan)
 #   iio-mex-real-<part>   against the real MATLAB headers (G2; linked into iio_mex.mexa64)
 # <part> is "core", "registry", "test" or a command group of IIO_MEX_GROUPS.
+# The part "test" (cmd_test.c: the test_* commands and the scripted backend of the tests) is
+# always in the mock variant, whose tests call it. It is in the MEX file only with
+# IIO_CONV_MEX_TEST_HOOKS=ON: a MEX file built without that option is one to hand out.
 set(IIO_MEX_PARTS core ${IIO_MEX_GROUPS} registry)
-set(IIO_MEX_DEFS MATLAB_MEX_FILE)
-if(IIO_CONV_BUILD_TESTS)
-	list(APPEND IIO_MEX_PARTS test)
-	list(APPEND IIO_MEX_DEFS IIO_MEX_TEST_HOOKS)
+set(IIO_MEX_REAL_PARTS ${IIO_MEX_PARTS})
+if(IIO_CONV_MEX_TEST_HOOKS)
+	list(APPEND IIO_MEX_REAL_PARTS test)
 endif()
 
 set(IIO_MEX_ENUMS_C ${CMAKE_CURRENT_BINARY_DIR}/iio_mex_enums.c)
@@ -17,8 +19,15 @@ add_custom_command(OUTPUT ${IIO_MEX_ENUMS_C}
 	DEPENDS tools/gen_enums.py ${LIBIIO_INCLUDE_DIR}/iio/iio.h VERBATIM)
 add_custom_target(iio-mex-enums DEPENDS ${IIO_MEX_ENUMS_C})
 
-function(iio_mex_objects variant runtime)
-	foreach(part ${IIO_MEX_PARTS})
+# hooks: ON adds the part "test" and defines IIO_MEX_TEST_HOOKS for every part.
+function(iio_mex_objects variant runtime hooks)
+	set(parts ${IIO_MEX_PARTS})
+	set(defs MATLAB_MEX_FILE)
+	if(hooks)
+		list(APPEND parts test)
+		list(APPEND defs IIO_MEX_TEST_HOOKS)
+	endif()
+	foreach(part ${parts})
 		if(part STREQUAL core)
 			set(src mex/iio_mex.c mex/handles.c mex/mx_util.c ${IIO_MEX_ENUMS_C})
 		elseif(part STREQUAL registry)
@@ -29,8 +38,11 @@ function(iio_mex_objects variant runtime)
 		set(tgt iio-mex-${variant}-${part})
 		add_library(${tgt} OBJECT ${src})
 		add_dependencies(${tgt} iio-mex-enums)
-		target_include_directories(${tgt} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/mex ${PROJECT_SOURCE_DIR}/tests)
-		target_compile_definitions(${tgt} PUBLIC ${IIO_MEX_DEFS})
+		target_include_directories(${tgt} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/mex)
+		if(part STREQUAL test)
+			target_include_directories(${tgt} PRIVATE ${PROJECT_SOURCE_DIR}/tests)   # fake_backend.h
+		endif()
+		target_compile_definitions(${tgt} PUBLIC ${defs})
 		if(IIO_CONV_STRICT_TESTS)
 			target_compile_options(${tgt} PRIVATE -Werror)   # gate G2 of wave 1: a warning fails the build
 		endif()
@@ -64,7 +76,7 @@ if(IIO_MEX_TESTS)
 		target_compile_options(iio-mex-mockrt INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
 		target_link_options(iio-mex-mockrt INTERFACE -fsanitize=address,undefined)
 	endif()
-	iio_mex_objects(mock iio-mex-mockrt)
+	iio_mex_objects(mock iio-mex-mockrt ON)
 
 	# Task 7: G4
 	set(strict)
@@ -93,10 +105,13 @@ if(IIO_CONV_BUILD_MATLAB)
 	# -fexceptions: mexErrMsgIdAndTxt leaves by throwing a C++ exception through these C frames.
 	# -fvisibility=default: the project preset is hidden, which would drop mexFunction.
 	target_compile_options(iio-mex-realrt INTERFACE -fexceptions -fvisibility=default)
-	iio_mex_objects(real iio-mex-realrt)
+	if(IIO_CONV_MEX_TEST_HOOKS)
+		message(STATUS "IIO_CONV_MEX_TEST_HOOKS: iio_mex has the test_* commands; it is a MEX file for the tests, not one to hand out")
+	endif()
+	iio_mex_objects(real iio-mex-realrt ${IIO_CONV_MEX_TEST_HOOKS})
 
 	set(objs)
-	foreach(part ${IIO_MEX_PARTS})
+	foreach(part ${IIO_MEX_REAL_PARTS})
 		list(APPEND objs $<TARGET_OBJECTS:iio-mex-real-${part}>)
 	endforeach()
 	# Adds c_mexapi_version.c, the export version script, libmex and libmx.
@@ -116,7 +131,14 @@ if(IIO_CONV_BUILD_MATLAB)
 		target_link_libraries(mex_loadcheck PRIVATE ${CMAKE_DL_LIBS})
 		add_test(NAME mex_loadcheck COMMAND mex_loadcheck $<TARGET_FILE:iio_mex>)
 		set_tests_properties(mex_loadcheck PROPERTIES ENVIRONMENT "${mlibs}")
-		set_tests_properties(mex_exports mex_loadcheck PROPERTIES LABELS mex)
+		# The test_* commands are in the MEX file exactly when IIO_CONV_MEX_TEST_HOOKS asks for them.
+		if(IIO_CONV_MEX_TEST_HOOKS)
+			set(hooks with)
+		else()
+			set(hooks without)
+		endif()
+		add_test(NAME mex_test_hooks COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_mex_hooks.sh $<TARGET_FILE:iio_mex> ${hooks})
+		set_tests_properties(mex_exports mex_loadcheck mex_test_hooks PROPERTIES LABELS mex)
 		# Task 7: G3
 		add_test(NAME mex_mlint COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_mlint.sh)
 		# The lint tests are exempt from the 4 s rule: mlint of R2023b needs about 0.12 s per file.

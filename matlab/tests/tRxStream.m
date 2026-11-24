@@ -292,6 +292,42 @@ classdef tRxStream < IioTestCase
             tc.verifyEqual(r.Timeout, 0);
         end
 
+        function timeoutConstants(tc)
+            % the two values of Timeout that are no number of milliseconds have a name
+            tc.verifyEqual(iio.StreamTimeout.FromContext, -1);
+            tc.verifyEqual(iio.StreamTimeout.NonBlocking, 0);
+            % FromContext is the default: a frame of emu-rx arrives within the context timeout
+            ctx = iio.Context(tc.Fx.Uri);
+            rx = ctx.find_device("emu-rx");
+            r = iio.RxStream(rx, ["voltage0_i", "voltage0_q"], SamplesPerFrame = 8, ...
+                Timeout = iio.StreamTimeout.FromContext);
+            tc.verifyEqual(r.Timeout, -1);
+            [d, v] = r.read();
+            tc.verifyEqual(v, true);
+            tc.verifyEqual(d, [(-2048:-2041).', (2047:-1:2040).']);
+            r.close();
+            r = iio.RxStream(rx, ["voltage0_i", "voltage0_q"], SamplesPerFrame = 8);
+            tc.verifyEqual(r.Timeout, iio.StreamTimeout.FromContext);
+            [~, v] = r.read();
+            tc.verifyEqual(v, true);
+            r.close();
+            % NonBlocking: the fake backend delivers three frames, then nothing, and the
+            % fourth read returns at once without a frame
+            fake = tc.Fx.fakeContext();
+            r = iio.RxStream(fake.find_device("emu-rx"), ["voltage0_i", "voltage0_q"], SamplesPerFrame = 4, ...
+                OutputDataType = "int16", Complex = true, Timeout = iio.StreamTimeout.NonBlocking);
+            tc.verifyEqual(r.Timeout, 0);
+            for k = 1:3
+                [~, v] = r.read();
+                tc.verifyEqual(v, true);
+            end
+            [d, v] = r.read();
+            tc.verifyEqual(v, false);
+            tc.verifySize(d, [4 1]);
+            tc.verifyEqual(real(d), zeros(4, 1, 'int16'));
+            tc.verifyEqual(imag(d), zeros(4, 1, 'int16'));
+        end
+
         function readAfterClose(tc)
             ctx = iio.Context(tc.Fx.Uri);
             rx = ctx.find_device("emu-rx");

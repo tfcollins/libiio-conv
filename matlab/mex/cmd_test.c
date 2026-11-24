@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* iio_mex gateway, command group "test": a context on the fake backend of the tests, and what
- * that backend recorded. Compiled only into test builds (IIO_MEX_TEST_HOOKS). */
+ * that backend recorded. Compiled only with IIO_MEX_TEST_HOOKS: always for the mock-based
+ * tests, into the MEX file only when CMake has IIO_CONV_MEX_TEST_HOOKS=ON (default OFF). */
 #include "mx_util.h"
 
 #ifdef IIO_MEX_TEST_HOOKS

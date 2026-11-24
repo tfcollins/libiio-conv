@@ -302,6 +302,28 @@ classdef tTxStream < IioTestCase
             tc.verifyEqual(t.flush(), false);
         end
 
+        function timeoutConstants(tc)
+            % FromContext is the default: a frame to emu-tx is sent within the context timeout
+            ctx = iio.Context(tc.Fx.Uri);
+            t = iio.TxStream(ctx.find_device("emu-tx"), ["voltage0_i", "voltage0_q"], SamplesPerFrame = 4, ...
+                NumBlocks = 1, Complex = true, Timeout = iio.StreamTimeout.FromContext);
+            tc.verifyEqual(t.Timeout, -1);
+            tc.verifyEqual(t.write(frameA()), true);
+            tc.verifyEqual(t.flush(), true);
+            t.close();
+            % NonBlocking: the fake backend completes two transmit blocks, then none, and
+            % write and flush return at once
+            fake = tc.Fx.fakeContext();
+            t = iio.TxStream(fake.find_device("emu-tx"), ["voltage0_i", "voltage0_q"], SamplesPerFrame = 4, ...
+                NumBlocks = 2, Complex = true, Timeout = iio.StreamTimeout.NonBlocking);
+            tc.verifyEqual(t.Timeout, 0);
+            for k = 1:4
+                tc.verifyEqual(t.write(frameA()), true);
+            end
+            tc.verifyEqual(t.write(frameA()), false);
+            tc.verifyEqual(t.flush(), false);
+        end
+
         function rxAndTxTogether(tc)
             ctx = iio.Context(tc.Fx.Uri);
             r = iio.RxStream(ctx.find_device("emu-rx"), ["voltage0_i", "voltage0_q"], ...
