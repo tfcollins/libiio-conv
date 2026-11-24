@@ -4,3 +4,4 @@ deps/install
 .superpowers/
 matlab/*.mexa64
 docs/_build/
+bench/hw-stream/rxbench
