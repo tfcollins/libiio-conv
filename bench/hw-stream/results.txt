@@ -1,0 +1,72 @@
+PASS 1: conv ip:<board> 1024 50 5000
+RESULT conv spf=1024 frames=50 valid=50 invalid=0 mean_ms=0.477 median_ms=0.008 worst_ms=1.106 wall_s=0.024 rate_all_sps=2147735 rate_steady_sps=2174946 cpu_s=0.004 cpu_share=18.0% close_ms=0.6 timeout_ms=5000 step=4 first_err=0 last_frame_min=-134 max=141 changes=2026/2046
+rc=0
+PASS 1: conv ip:<board> 1024 50 -1
+RESULT conv spf=1024 frames=50 valid=50 invalid=0 mean_ms=0.448 median_ms=0.449 worst_ms=0.570 wall_s=0.022 rate_all_sps=2283669 rate_steady_sps=2301973 cpu_s=0.004 cpu_share=18.8% close_ms=0.5 timeout_ms=-1 step=4 first_err=0 last_frame_min=-124 max=127 changes=2030/2046
+rc=0
+PASS 1: plain ip:<board> 1024 50
+RESULT plain spf=1024 frames=50 valid=50 invalid=0 mean_ms=0.456 median_ms=0.452 worst_ms=0.598 wall_s=0.023 rate_all_sps=2244886 rate_steady_sps=2260250 cpu_s=0.004 cpu_share=16.8% close_ms=0.6 step=4 first_err=0 last_frame_min=-112 max=140 changes=2032/2046
+rc=0
+PASS 1: conv ip:<board> 16384 50 5000
+RESULT conv spf=16384 frames=50 valid=50 invalid=0 mean_ms=1.458 median_ms=1.117 worst_ms=2.384 wall_s=0.073 rate_all_sps=11233369 rate_steady_sps=11394996 cpu_s=0.013 cpu_share=18.0% close_ms=0.4 timeout_ms=5000 step=4 first_err=0 last_frame_min=-209 max=207 changes=32466/32766
+rc=0
+PASS 1: conv ip:<board> 16384 50 -1
+RESULT conv spf=16384 frames=50 valid=50 invalid=0 mean_ms=1.467 median_ms=1.450 worst_ms=2.020 wall_s=0.073 rate_all_sps=11167572 rate_steady_sps=11190571 cpu_s=0.017 cpu_share=23.0% close_ms=1.3 timeout_ms=-1 step=4 first_err=0 last_frame_min=-230 max=221 changes=32461/32766
+rc=0
+PASS 1: plain ip:<board> 16384 50
+RESULT plain spf=16384 frames=50 valid=50 invalid=0 mean_ms=1.531 median_ms=1.443 worst_ms=4.182 wall_s=0.077 rate_all_sps=10699197 rate_steady_sps=10717568 cpu_s=0.016 cpu_share=20.8% close_ms=1.9 step=4 first_err=0 last_frame_min=-234 max=267 changes=32448/32766
+rc=0
+PASS 1: conv ip:<board> 262144 50 5000
+RESULT conv spf=262144 frames=50 valid=50 invalid=0 mean_ms=17.815 median_ms=17.432 worst_ms=28.622 wall_s=0.891 rate_all_sps=14714345 rate_steady_sps=14738883 cpu_s=0.202 cpu_share=22.7% close_ms=14.9 timeout_ms=5000 step=4 first_err=0 last_frame_min=-237 max=246 changes=519446/524286
+rc=0
+PASS 1: conv ip:<board> 262144 50 -1
+RESULT conv spf=262144 frames=50 valid=50 invalid=0 mean_ms=17.997 median_ms=17.754 worst_ms=31.347 wall_s=0.900 rate_all_sps=14565731 rate_steady_sps=14754807 cpu_s=0.176 cpu_share=19.6% close_ms=14.8 timeout_ms=-1 step=4 first_err=0 last_frame_min=-256 max=231 changes=519573/524286
+rc=0
+PASS 1: plain ip:<board> 262144 50
+RESULT plain spf=262144 frames=50 valid=50 invalid=0 mean_ms=17.566 median_ms=17.694 worst_ms=24.459 wall_s=0.878 rate_all_sps=14923102 rate_steady_sps=14929660 cpu_s=0.153 cpu_share=17.4% close_ms=17.2 step=4 first_err=0 last_frame_min=-380 max=500 changes=519390/524286
+rc=0
+PASS 1: conv ip:<board> 1048576 50 5000
+RESULT conv spf=1048576 frames=50 valid=50 invalid=0 mean_ms=69.819 median_ms=69.092 worst_ms=110.169 wall_s=3.491 rate_all_sps=15018380 rate_steady_sps=15200561 cpu_s=0.783 cpu_share=22.4% close_ms=58.1 timeout_ms=5000 step=4 first_err=0 last_frame_min=-2048 max=2047 changes=2077653/2097150
+rc=0
+PASS 1: conv ip:<board> 1048576 50 -1
+RESULT conv spf=1048576 frames=50 valid=50 invalid=0 mean_ms=68.396 median_ms=69.015 worst_ms=108.668 wall_s=3.420 rate_all_sps=15330928 rate_steady_sps=15323974 cpu_s=0.661 cpu_share=19.3% close_ms=57.5 timeout_ms=-1 step=4 first_err=0 last_frame_min=-1815 max=1776 changes=2080428/2097150
+rc=0
+PASS 1: plain ip:<board> 1048576 50
+RESULT plain spf=1048576 frames=50 valid=50 invalid=0 mean_ms=69.633 median_ms=69.370 worst_ms=94.910 wall_s=3.482 rate_all_sps=15058500 rate_steady_sps=15136042 cpu_s=0.637 cpu_share=18.3% close_ms=64.1 step=4 first_err=0 last_frame_min=-1051 max=1005 changes=2077801/2097150
+rc=0
+PASS 2: conv ip:<board> 1024 50 5000
+RESULT conv spf=1024 frames=50 valid=50 invalid=0 mean_ms=0.452 median_ms=0.005 worst_ms=1.091 wall_s=0.023 rate_all_sps=2267468 rate_steady_sps=2309211 cpu_s=0.005 cpu_share=20.5% close_ms=0.2 timeout_ms=5000 step=4 first_err=0 last_frame_min=-124 max=129 changes=2031/2046
+rc=0
+PASS 2: conv ip:<board> 1024 50 -1
+RESULT conv spf=1024 frames=50 valid=50 invalid=0 mean_ms=0.449 median_ms=0.450 worst_ms=0.573 wall_s=0.022 rate_all_sps=2281315 rate_steady_sps=2304509 cpu_s=0.005 cpu_share=22.6% close_ms=0.5 timeout_ms=-1 step=4 first_err=0 last_frame_min=-141 max=154 changes=2028/2046
+rc=0
+PASS 2: plain ip:<board> 1024 50
+RESULT plain spf=1024 frames=50 valid=50 invalid=0 mean_ms=0.450 median_ms=0.446 worst_ms=0.647 wall_s=0.023 rate_all_sps=2275461 rate_steady_sps=2288061 cpu_s=0.004 cpu_share=17.2% close_ms=0.5 step=4 first_err=0 last_frame_min=-110 max=140 changes=2023/2046
+rc=0
+PASS 2: conv ip:<board> 16384 50 5000
+RESULT conv spf=16384 frames=50 valid=50 invalid=0 mean_ms=1.478 median_ms=1.115 worst_ms=2.363 wall_s=0.074 rate_all_sps=11082091 rate_steady_sps=11221763 cpu_s=0.013 cpu_share=18.2% close_ms=0.4 timeout_ms=5000 step=4 first_err=0 last_frame_min=-208 max=226 changes=32446/32766
+rc=0
+PASS 2: conv ip:<board> 16384 50 -1
+RESULT conv spf=16384 frames=50 valid=50 invalid=0 mean_ms=1.483 median_ms=1.466 worst_ms=2.323 wall_s=0.074 rate_all_sps=11049852 rate_steady_sps=11174103 cpu_s=0.014 cpu_share=19.0% close_ms=1.3 timeout_ms=-1 step=4 first_err=0 last_frame_min=-213 max=214 changes=32467/32766
+rc=0
+PASS 2: plain ip:<board> 16384 50
+RESULT plain spf=16384 frames=50 valid=50 invalid=0 mean_ms=1.525 median_ms=1.494 worst_ms=2.098 wall_s=0.076 rate_all_sps=10744357 rate_steady_sps=10882925 cpu_s=0.009 cpu_share=12.3% close_ms=1.5 step=4 first_err=0 last_frame_min=-207 max=205 changes=32462/32766
+rc=0
+PASS 2: conv ip:<board> 262144 50 5000
+RESULT conv spf=262144 frames=50 valid=50 invalid=0 mean_ms=18.040 median_ms=17.476 worst_ms=29.589 wall_s=0.902 rate_all_sps=14531332 rate_steady_sps=14701010 cpu_s=0.192 cpu_share=21.3% close_ms=14.5 timeout_ms=5000 step=4 first_err=0 last_frame_min=-230 max=445 changes=519231/524286
+rc=0
+PASS 2: conv ip:<board> 262144 50 -1
+RESULT conv spf=262144 frames=50 valid=50 invalid=0 mean_ms=17.980 median_ms=17.810 worst_ms=27.708 wall_s=0.899 rate_all_sps=14579846 rate_steady_sps=14700896 cpu_s=0.187 cpu_share=20.8% close_ms=14.8 timeout_ms=-1 step=4 first_err=0 last_frame_min=-1805 max=1831 changes=519756/524286
+rc=0
+PASS 2: plain ip:<board> 262144 50
+RESULT plain spf=262144 frames=50 valid=50 invalid=0 mean_ms=18.035 median_ms=17.786 worst_ms=27.602 wall_s=0.902 rate_all_sps=14535545 rate_steady_sps=14678937 cpu_s=0.167 cpu_share=18.5% close_ms=16.6 step=4 first_err=0 last_frame_min=-755 max=808 changes=519782/524286
+rc=0
+PASS 2: conv ip:<board> 1048576 50 5000
+RESULT conv spf=1048576 frames=50 valid=50 invalid=0 mean_ms=69.438 median_ms=69.407 worst_ms=117.931 wall_s=3.472 rate_all_sps=15100877 rate_steady_sps=15276678 cpu_s=0.683 cpu_share=19.7% close_ms=57.4 timeout_ms=5000 step=4 first_err=0 last_frame_min=-1011 max=1075 changes=2078618/2097150
+rc=0
+PASS 2: conv ip:<board> 1048576 50 -1
+RESULT conv spf=1048576 frames=50 valid=50 invalid=0 mean_ms=69.786 median_ms=69.325 worst_ms=116.192 wall_s=3.489 rate_all_sps=15025656 rate_steady_sps=15194784 cpu_s=0.729 cpu_share=20.9% close_ms=54.2 timeout_ms=-1 step=4 first_err=0 last_frame_min=-1757 max=1726 changes=2079767/2097150
+rc=0
+PASS 2: plain ip:<board> 1048576 50
+RESULT plain spf=1048576 frames=50 valid=50 invalid=0 mean_ms=69.118 median_ms=68.393 worst_ms=102.694 wall_s=3.456 rate_all_sps=15170856 rate_steady_sps=15322631 cpu_s=0.448 cpu_share=13.0% close_ms=67.0 step=4 first_err=0 last_frame_min=-982 max=991 changes=2080125/2097150
+rc=0

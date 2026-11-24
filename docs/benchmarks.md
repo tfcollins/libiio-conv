@@ -296,6 +296,56 @@ How to read this:
   release, not the releases with each other.
 - Shared runners are noisy; the test asserts values, never a time.
 
+## Stream layer on hardware (network backend)
+
+One receive-only run on an ADRV9361-Z7035 (AD9361, 2 Rx channels of 16-bit I and Q) over
+the `ip:` backend, 2026-11-23. Program, script and raw output are in `bench/hw-stream/`.
+
+- Library: libiio-conv at commit `24ee124`, Release build; client libiio 1.1 (the pinned
+  commit); the board runs iiod 0.26, so this is the legacy protocol path.
+- Radio as found and not changed: 30.72 MS/s, 18 MHz bandwidth, LO 2.4 GHz. No attribute
+  was written, nothing was transmitted.
+- Stream settings: device `cf-ad9361-lpc`, `voltage0` and `voltage1` as one complex column,
+  double, no scaling, 4 blocks. These are the settings the receive classes of the MATLAB
+  toolbox port ask for.
+- 50 frames per case, each case run twice (run 1 / run 2). Every case returned 50 valid
+  frames. "Plain libiio" is a dequeue/enqueue loop on `iio_block` with no conversion.
+
+Mean time per frame in ms:
+
+| samples per frame | stream, timeout 5000 ms (1 ms polling) | stream, timeout -1 (blocking) | plain libiio | achieved rate |
+|---|---|---|---|---|
+| 1024 | 0.477 / 0.452 | 0.448 / 0.449 | 0.456 / 0.450 | 2.3 MS/s |
+| 16384 | 1.458 / 1.478 | 1.467 / 1.483 | 1.531 / 1.525 | 11 MS/s |
+| 262144 | 17.82 / 18.04 | 18.00 / 17.98 | 17.57 / 18.04 | 14.7 MS/s |
+| 1048576 | 69.82 / 69.44 | 68.40 / 69.79 | 69.63 / 69.12 | 15.2 MS/s |
+
+- The stream layer is within about 3% of the plain loop at every size, which is also the
+  spread between the two runs. The link dominates; the conversion does not show.
+- Polling and blocking waits have the same mean. With polling and small frames the median
+  is far below the mean (0.008 ms against 0.48 ms at 1024): some reads return at once and
+  others wait one 1 ms step.
+- Process CPU time is 18% to 23% of wall time for the stream cases and 12% to 21% for the
+  plain loop.
+- The link tops out near 15.2 MS/s (about 61 MB/s), half of the 30.72 MS/s the board
+  produces, for the stream layer and for plain libiio alike. At this sample rate
+  consecutive frames are therefore not contiguous in time.
+- Closing takes longer with larger frames, up to about 58 ms at 1048576 samples.
+- Worst-frame times vary by up to a factor of 2 between runs; the runs are short (50
+  frames).
+
+Caveats: one board, one link, one day; receive only; 50 frames per case. "Achieved rate"
+leaves out the first 4 frames, which are captured before the first read.
+
+To repeat it (libiio-conv built in `build/`, pinned libiio in `deps/install`):
+
+    gcc -O2 -Iinclude -Ideps/install/include bench/hw-stream/rxbench.c \
+        -o bench/hw-stream/rxbench -Lbuild -liio-conv -Ldeps/install/lib -liio -lm \
+        -Wl,-rpath,$PWD/build -Wl,-rpath,$PWD/deps/install/lib
+    bench/hw-stream/run.sh ip:<board>
+
+`rxbench info <uri>` prints the devices and the radio settings without creating a buffer.
+
 ## Reading the numbers
 
 - The gain over libiio's per-sample conversion is 4x to 18x even for the
