@@ -12,6 +12,10 @@ session, so no limit depends on the link or on the board.
 Completeness:
 - the file holds nothing but the PASS, RESULT and rc= lines of run.sh (rxbench
   prints its errors, so any other line is one);
+- every case is its PASS line, exactly one RESULT line and its rc= line, in
+  that order: a case with no rc= line before the next case or the end of the
+  file, a second RESULT line, and a RESULT or rc= line outside a case are
+  violations;
 - every case of run.sh is there --passes times (default 2, as run.sh), ran to
   the end (rc=0), read all its frames and none of them invalid;
 - the last frame of every case is live data (at least half of its samples
@@ -58,33 +62,52 @@ def name(mode, timeout):
 
 
 def parse(text):
-    """Return (results, violations). A result is a dict of one RESULT line."""
-    results, bad, case, got = [], [], None, False
+    """Return (results, violations). A result is a dict of one RESULT line.
+
+    A case is its PASS line, one RESULT line and its rc= line, in that order.
+    """
+    results, bad, case, got = [], [], None, 0
+
+    def end(why):
+        if not got:
+            bad.append(f"no result for '{case}'")
+        if why:
+            bad.append(f"'{case}' has no exit status (no rc= line) before {why}")
+
     for line in text.splitlines():
         if line.startswith("PASS "):
-            if case is not None and not got:
-                bad.append(f"no result for '{case}'")
-            case, got = line.split(": ", 1)[-1], False
+            if case is not None:
+                end("the next case")
+            case, got = line.split(": ", 1)[-1], 0
         elif line.startswith("RESULT "):
+            if case is None:
+                bad.append(f"result outside a case: {line[:100]}")
+                continue
+            got += 1
+            if got > 1:
+                if got == 2:
+                    bad.append(f"'{case}' has more than one result")
+                continue
             r = dict(FIELD.findall(line))
             r["mode"] = line.split()[1]
-            r["case"] = case or line
-            got = True
+            r["case"] = case
             missing = [k for k in NEEDED if k not in r]
             if missing or (r["mode"] == "conv" and "timeout_ms" not in r):
-                bad.append(f"'{r['case']}': RESULT line is cut short")
+                bad.append(f"'{case}': RESULT line is cut short")
                 continue
             results.append(r)
         elif line.startswith("rc="):
+            if case is None:
+                bad.append(f"exit status outside a case: {line[:100]}")
+                continue
             if line != "rc=0":
                 bad.append(f"'{case}' ended with {line}")
-            if not got:
-                bad.append(f"no result for '{case}'")
-            case, got = None, True
+            end(None)
+            case = None
         elif line.strip():
             bad.append(f"unexpected line in the results: {line.strip()[:100]}")
-    if case is not None and not got:
-        bad.append(f"no result for '{case}'")
+    if case is not None:
+        end("the end of the file")
     return results, bad
 
 
