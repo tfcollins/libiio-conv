@@ -169,6 +169,41 @@ class CheckResults(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("no result for 'plain", out)
 
+    def test_middle_case_without_an_exit_status_fails(self):
+        # the rc=0 of the third case of the second pass
+        m = list(re.finditer(r"^rc=0\n", GOOD, flags=re.M))[14]
+        rc, out = run(GOOD[:m.start()] + GOOD[m.end():])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no exit status", out)
+        self.assertIn("1 violation(s)", out)
+
+    def test_final_case_without_an_exit_status_fails(self):
+        self.assertTrue(GOOD.endswith("rc=0\n"))
+        rc, out = run(GOOD[:-len("rc=0\n")])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no exit status", out)
+        self.assertIn("1 violation(s)", out)
+
+    def test_two_results_in_one_case_fail(self):
+        line = re.search(r"^RESULT plain spf=1024 .*\n", GOOD, flags=re.M).group(0)
+        rc, out = run(GOOD.replace(line, line + line, 1))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("more than one result", out)
+
+    def test_result_outside_a_case_fails(self):
+        line = re.search(r"^RESULT plain spf=1024 .*\n", GOOD, flags=re.M).group(0)
+        for text in (line + GOOD, GOOD + line):
+            rc, out = run(text)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("result outside a case", out)
+
+    def test_exit_status_outside_a_case_fails(self):
+        for text in ("rc=0\n" + GOOD, GOOD + "rc=0\n", edit(r"^rc=0\n", "rc=0\nrc=0\n", count=1)):
+            rc, out = run(text)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("exit status outside a case", out)
+            self.assertIn("1 violation(s)", out)
+
     def test_data_that_does_not_change_fails(self):
         rc, out = run(edit(r"changes=\d+/2046", "changes=3/2046", count=1))
         self.assertEqual(rc, 1, out)
