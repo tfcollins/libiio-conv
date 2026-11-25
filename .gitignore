@@ -5,3 +5,4 @@ deps/install
 matlab/*.mexa64
 docs/_build/
 bench/hw-stream/rxbench
+__pycache__/
