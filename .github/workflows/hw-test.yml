@@ -1,0 +1,90 @@
+# Stream layer timing on a real board (bench/hw-stream), dispatched and weekly.
+# It fails when the stream layer falls behind a plain libiio block loop run in
+# the same session: see bench/hw-stream/check_results.py for the limits.
+#
+# This is a public repository, so the self-hosted lab runners are locked down:
+# - This workflow has no pull_request or push trigger, and none may be added.
+# - The lab runners belong to the organisation's hardware pool. Their
+#   job-started hook (outside this repository) decides which repository,
+#   workflow, ref, event and actor may run on them.
+# - The job is skipped anywhere but in the organisation that owns the pool.
+#
+# Host facts (coordinator, addresses) live in the runner's environment, never
+# in this file. The session log and the results are redacted
+# (bench/hw-stream/redact.py) before they are printed or uploaded.
+name: Hardware timing
+
+on:
+  workflow_dispatch:
+    inputs:
+      margin:
+        description: Percent the stream layer may be behind the plain loop
+        default: "10"
+  schedule:
+    # Mondays, away from the other jobs that use this board
+    - cron: "0 9 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  # tfcollins/labgrid-plugins: adi-lg and the board catalog
+  LABGRID_PLUGINS_REF: ec8bf3038716ff8642b425cdc1d8dc9ccc149c68
+
+jobs:
+  adrv9361-z7035:
+    name: Stream layer on ADRV9361-Z7035 (ip backend)
+    if: github.repository_owner == 'tfcollinsinc'
+    # Any slot of the hardware pool, or the labels in the repository variable
+    # HW_RUNNER_LABELS (a JSON list) when one slot has to be named
+    runs-on: ${{ fromJSON(vars.HW_RUNNER_LABELS || '["self-hosted", "hw"]') }}
+    timeout-minutes: 90
+    concurrency:
+      group: libiio-conv-hw-adrv9361-z7035
+      cancel-in-progress: false
+    env:
+      OUT: ${{ github.workspace }}/hw-out
+      MARGIN: ${{ inputs.margin || '10' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lab venv (labgrid-plugins at its pin, ninja)
+        run: |
+          rm -rf .venv-hw
+          uv venv .venv-hw
+          uv pip install --python .venv-hw/bin/python ninja \
+            "labgrid-plugins @ git+https://github.com/tfcollins/labgrid-plugins@$LABGRID_PLUGINS_REF"
+          echo "$PWD/.venv-hw/bin" >> "$GITHUB_PATH"
+
+      - name: Build the pinned libiio v1
+        run: deps/build-libiio.sh
+
+      - name: Build libiio-conv (Release) and rxbench
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DIIO_CONV_BUILD_TESTS=OFF
+          cmake --build build
+          gcc -O2 -Iinclude -Ideps/install/include bench/hw-stream/rxbench.c \
+            -o bench/hw-stream/rxbench -Lbuild -liio-conv -Ldeps/install/lib -liio -lm \
+            -Wl,-rpath,$PWD/build -Wl,-rpath,$PWD/deps/install/lib
+
+      - name: Checker self-test
+        run: python3 bench/hw-stream/test_check_results.py
+
+      - name: Board session and limits
+        run: |
+          case "$MARGIN" in ''|*[!0-9.]*) echo "margin must be a number" >&2; exit 2 ;; esac
+          bench/hw-stream/hw-run.sh adrv9361z7035 adrv1crr-fmc "$OUT" \
+            --margin "$MARGIN" --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Redact outputs
+        if: always()
+        run: test -d "$OUT" && python3 bench/hw-stream/redact.py "$OUT" && rm -f "$OUT"/*.raw.* || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hw-stream-adrv9361-z7035
+          path: |
+            hw-out/*.txt
+            hw-out/*.log
+          if-no-files-found: ignore

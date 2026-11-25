@@ -346,6 +346,35 @@ To repeat it (libiio-conv built in `build/`, pinned libiio in `deps/install`):
 
 `rxbench info <uri>` prints the devices and the radio settings without creating a buffer.
 
+### As a scheduled check
+
+`.github/workflows/hw-test.yml` ("Hardware timing") repeats this run on the same board
+model every week and on dispatch, and fails when the stream layer falls behind. It runs
+`bench/hw-stream/hw-run.sh`, which has labgrid boot the board on its catalog image, runs
+`run.sh`, powers the board off and then applies `bench/hw-stream/check_results.py`:
+
+- every case ran to the end, with a result and no invalid frame;
+- the last frame of every case is live data;
+- for each frame size, the best steady rate of the stream layer, with each of its two
+  timeout settings, is at most 10 % behind the best steady rate of the plain libiio loop
+  of the same session (`--margin`);
+- the median time to close the stream is at most twice the median close of the plain
+  loop plus 10 ms.
+
+The limit is relative to the plain loop measured in the same session, so it holds on any
+link and any board image; it is not a limit on the absolute rate. Every case is run five
+times and the best pass of each is compared, because the lab link is shared: on a busy
+day single passes of both loops ranged from 5 to 14.7 MS/s at 262144 samples per frame,
+and other traffic only ever makes a pass slower. On two sessions (one on a quiet link,
+one on a busy one) the largest difference between the best passes was 5 %.
+
+The job needs a self-hosted lab runner and is skipped outside the organisation that owns
+the runner pool. The workflow has no `push` or `pull_request` trigger. The coordinator
+address and the other lab facts come from the runner's environment; `redact.py` takes
+addresses and host names out of the session log and the results before they are printed
+or uploaded. `test_check_results.py` tests the checker and the redaction without
+hardware and runs in the hosted CI.
+
 ## Reading the numbers
 
 - The gain over libiio's per-sample conversion is 4x to 18x even for the

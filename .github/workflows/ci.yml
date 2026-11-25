@@ -83,6 +83,9 @@ jobs:
           ctest --test-dir build-rel --output-on-failure
           build-rel/bench/bench_conv -n 12 tests/resources/conv_test.xml
 
+      - name: Hardware timing checker self-test (no hardware)
+        run: python3 bench/hw-stream/test_check_results.py
+
   matlab:
     name: MATLAB bindings (${{ matrix.release }})
     runs-on: ubuntu-24.04
