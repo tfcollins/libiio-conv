@@ -71,20 +71,32 @@ jobs:
         run: python3 bench/hw-stream/test_check_results.py
 
       - name: Board session and limits
+        env:
+          IIO_CONV_HW_PASSES: "7"
         run: |
           case "$MARGIN" in ''|*[!0-9.]*) echo "margin must be a number" >&2; exit 2 ;; esac
+          # The pool's list of names to redact, under the name its runners use
+          export IIO_CONV_LAB_REDACT="${IIO_CONV_LAB_REDACT:-${DATAX_LAB_REDACT:-}}"
           bench/hw-stream/hw-run.sh adrv9361z7035 adrv1crr-fmc "$OUT" \
             --margin "$MARGIN" --summary "$GITHUB_STEP_SUMMARY"
 
-      - name: Redact outputs
+      # hw-run.sh leaves nothing unredacted; this covers a job that was
+      # cancelled or timed out in the middle of it
+      - name: No raw output is left
         if: always()
-        run: test -d "$OUT" && python3 bench/hw-stream/redact.py "$OUT" && rm -f "$OUT"/*.raw.* || true
+        run: |
+          if ls "$OUT"/*.raw.* >/dev/null 2>&1; then
+            rm -f "$OUT"/*.txt "$OUT"/*.log
+            echo "raw outputs were left behind: all outputs deleted" >&2
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: hw-stream-adrv9361-z7035
           path: |
-            hw-out/*.txt
-            hw-out/*.log
+            hw-out/results.txt
+            hw-out/info.txt
+            hw-out/session.log
           if-no-files-found: ignore

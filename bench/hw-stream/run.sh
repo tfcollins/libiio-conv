@@ -7,6 +7,7 @@
 # rxbench must be next to this script; see docs/benchmarks.md for the build.
 set -u
 [ $# -ge 1 ] && [ $# -le 3 ] || { echo "usage: $0 <uri> [<results file> [<passes>]]" >&2; exit 2; }
+case "${3:-2}" in *[!0-9]* | 0) echo "$0: <passes> must be a positive number" >&2; exit 2 ;; esac
 U=$1; R=$(realpath -m "${2:-$(dirname "$0")/results.txt}")
 cd "$(dirname "$0")"; : > "$R"
 for pass in $(seq 1 "${3:-2}"); do for spf in 1024 16384 262144 1048576; do

@@ -353,26 +353,41 @@ model every week and on dispatch, and fails when the stream layer falls behind. 
 `bench/hw-stream/hw-run.sh`, which has labgrid boot the board on its catalog image, runs
 `run.sh`, powers the board off and then applies `bench/hw-stream/check_results.py`:
 
-- every case ran to the end, with a result and no invalid frame;
-- the last frame of every case is live data;
-- for each frame size, the best steady rate of the stream layer, with each of its two
-  timeout settings, is at most 10 % behind the best steady rate of the plain libiio loop
-  of the same session (`--margin`);
-- the median time to close the stream is at most twice the median close of the plain
-  loop plus 10 ms.
+- completeness: every case of `run.sh` is there for every pass, ran to the end, read all
+  its frames with none invalid, ended on live data, and `rxbench` printed no error;
+- rate: for each frame size and each of the two timeout settings, the best steady rate of
+  the stream layer is at most 10 % behind the best steady rate of the plain libiio loop of
+  the same session (`--margin`), and at most 50 % above it (`--ahead`);
+- CPU: at 262144 samples per frame and more, the median CPU time per frame of the stream
+  layer is at most 1.75 times that of the plain loop (`--cpu-ratio`);
+- a coarse guard: the median steady rate of the stream layer is at least 60 % of that of
+  the plain loop;
+- close: the median time to close the stream is at most twice that of the plain loop plus
+  5 ms.
 
-The limit is relative to the plain loop measured in the same session, so it holds on any
-link and any board image; it is not a limit on the absolute rate. Every case is run five
-times and the best pass of each is compared, because the lab link is shared: on a busy
-day single passes of both loops ranged from 5 to 14.7 MS/s at 262144 samples per frame,
-and other traffic only ever makes a pass slower. On two sessions (one on a quiet link,
-one on a busy one) the largest difference between the best passes was 5 %.
+All limits are relative to the plain loop measured in the same session, so they hold on
+any link and any board image; none is a limit on an absolute rate.
+
+- The link is the bottleneck of this measurement (about 15 MS/s for a radio at
+  30.72 MS/s), so the rate limits see a stream layer that stalls or loses frames, not one
+  that only costs more CPU. The CPU limit is the one that sees a slower conversion: CPU
+  time per frame does not depend on the link. In three sessions the ratio was 1.13 to
+  1.47 (the stream layer converts to double, the plain loop converts nothing).
+- The lab link is shared. On a busy day single passes of both loops ranged from 5 to
+  14.7 MS/s at 262144 samples per frame. Other traffic only ever makes a pass slower, so
+  the best pass of each case is compared, and the scheduled job runs seven passes. With
+  two passes on a busy link the rate limit failed from noise alone.
+- The limits were set from a few sessions; how often a healthy run fails on a busy link
+  is not known yet.
 
 The job needs a self-hosted lab runner and is skipped outside the organisation that owns
 the runner pool. The workflow has no `push` or `pull_request` trigger. The coordinator
-address and the other lab facts come from the runner's environment; `redact.py` takes
-addresses and host names out of the session log and the results before they are printed
-or uploaded. `test_check_results.py` tests the checker and the redaction without
+address and the other lab facts come from the runner's environment. `redact.py` takes
+IP and MAC addresses, `.local` names, serial numbers and the host and place names listed
+in `IIO_CONV_LAB_REDACT` out of the session log and the results before they are printed
+or uploaded; `hw-run.sh` refuses to run without that list and deletes its outputs when
+the redaction fails. The build steps of the job are not redacted and print the runner's
+workspace path. `test_check_results.py` tests the checker and the redaction without
 hardware and runs in the hosted CI.
 
 ## Reading the numbers
